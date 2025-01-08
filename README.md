@@ -7,7 +7,9 @@ Add the line `import ./smb` into your program. For now, that's it. The SMB folde
 I've tried to make things fairly simple, but this is SMB. You *do* need to know what you're doing.
 
 There are "builder" functions for several SMB Requests (NEGOTIATE, SESSION_SETUP, CREATE, WRITE, READ, IOCTL). These all follow the same pattern for naming purposes: "*new*" SMB Request "*request*". e.g `newWriteRequest()`
+
 Following this, should you need to modify any of the request types' (or SMB Headers') properties, you can do so. Most of these properties have default values, however, this does **not** mean you can expect things to work without changing anything. To keep things simple, most of the field names are very similar to what you will find on MSDN. e.g `SMB2NegotiateRequest.dialectCount`
+
 Next, you'll need to serialize the data. There is a `build()` function for this purpose. Likewise, there is a `send()` function to send the request to the server. The `send()` returns the server's response status code and response as well.
 
 Alternatively: You have full access to the underlying structures to do with as you please. 
