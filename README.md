@@ -2,7 +2,7 @@
 The start of an SMB library written in Nim. Lots of things need to be improved. Lots of things need to be tested. Lots of things need to be implemented. Expect bugs. Expect breaking changes. This is anything, but, a stable project. PRs are, of course, welcome!
 
 ## Usage
-Add the line `import ./smb` into your program. For now, that's it. The SMB folder here imports the others, so you shouldn't need to do so manually. This will eventually change as more functionality is added.
+Add the line `import ./smb/smb` into your program. For now, that's it. The SMB folder here imports the others, so you shouldn't need to do so manually. This will eventually change as more functionality is added.
 
 I've tried to make things fairly simple, but this is SMB. You *do* need to know what you're doing.
 
@@ -65,3 +65,4 @@ when isMainModule:
 - Kerberos Authentication
 - NDR Encoder/Decoder
 - ASN.1 BER Encoder/Decoder
+- Test on Windows host
