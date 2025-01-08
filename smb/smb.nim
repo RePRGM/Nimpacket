@@ -643,23 +643,3 @@ proc listShares*(client: SmbClient): seq[Share] =
       client.sendNetbiosHeader(disconnectData.len.uint32)
       client.socket.send(cast[string](disconnectData))
       client.treeId = 0
-
-when isMainModule:
-  let client = newSmbClient("10.0.0.48")
-  try:
-    # Connect with password
-     client.connect("user", password = "password")
-    # Or with NTLM hash
-     #client.connect("user", ntlmHash = "8846F7EAEE8FB117AD06BDD830B7586C")
-    
-     let shares = client.listShares()
-     echo "\nShare Name (Description)"
-     echo "--------------------------"
-     for share in shares:
-      stdout.write share.name
-
-      if share.description.len > 0:
-        stdout.write "\t(", share.description, ")"
-      stdout.write "\n"
-  except: echo "[-] Error: ", getCurrentExceptionMsg()
-  finally: client.disconnect()
