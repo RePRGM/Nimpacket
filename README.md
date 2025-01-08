@@ -6,7 +6,7 @@ Add the line `import ./smb` into your program. For now, that's it. The SMB folde
 
 I've tried to make things fairly simple, but this is SMB. You *do* need to know what you're doing.
 
-There are "builder" functions for several SMB Requests (NEGOTIATE, SESSION_SETUP, CREATE, WRITE, READ, IOCTL). These all follow the same pattern for naming purposes: "*new*" SMB Request "*request*". e.g `newWriteRequest()`
+There are "builder" functions for several SMB Requests (NEGOTIATE, SESSION_SETUP, CREATE, WRITE, READ, IOCTL). These all follow the same pattern for naming purposes: "*new*"-SMB Request-"*request*". e.g `newWriteRequest()`
 
 Following this, should you need to modify any of the request types' (or SMB Headers') properties, you can do so. Most of these properties have default values, however, this does **not** mean you can expect things to work without changing anything. To keep things simple, most of the field names are very similar to what you will find on MSDN. e.g `SMB2NegotiateRequest.dialectCount`
 
