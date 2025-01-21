@@ -1,4 +1,4 @@
-import std/[net, strutils, endians]
+import std/[net, strutils, endians, strformat, tables] 
 import hashlib/rhash/[md4, md5]
 import 
   ../NLMP/nlmp, 
@@ -538,35 +538,55 @@ proc sendNetShareEnumAll*(client: SmbClient, fileId: tuple[persistent, volatile:
  var rpcReq = newSeqUninit[uint8](24)
  copyMem(rpcReq[0].addr, rpcRequest.addr, sizeof(rpcRequest))
 
- # Server name parameter
- rpcReq.add([0x00'u8, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00])  # Referent ID
- rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Max count
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Offset
- rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Actual count
+ ## Server name parameter
+ #rpcReq.add([0x00'u8, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00])  # Referent ID
+ #rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Max count
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Offset
+ #rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Actual count
+ #
+ ## Server name string
+ #rpcReq.add(toUtf16LE("\\\\" & client.host & "\0"))
+ #
+ ## Level and share info
+ #rpcReq.add([0x01'u8, 0x00, 0x00, 0x00])      # Level = 1
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # No idea what to call this. Not padding. Identifying a structure (container/ ctr)?
+ #rpcReq.add([0x01'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Container pointer (referent id)
+ #rpcReq.add([0x00'u8, 0x00, 0x02, 0x00])      # No idea what to call this. Not padding. Array size? Wireshark says "count"
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Buffer pointer
+#
+ ## Max Buffer
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
+#
+ ## Resume Handle
+ #rpcReq.add([0xff'u8, 0xff, 0xff, 0xff, 0x00'u8, 0x00, 0x00, 0x00]) # Referent ID
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Resume Handle Value
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding ?
  
- # Server name string
- rpcReq.add(toUtf16LE("\\\\" & client.host & "\0"))
+ var ctx = NDRContext(data: @[], position: 0, nextRefId: 1, pointerMap: initTable[pointer, uint32]())
+ encodeInt32(ctx, Level1.ord)
+ echo "ctx.data (Level1 Enum): ", ctx.data
+ let servername = r"\\" & client.host
  
- # Level and share info
- rpcReq.add([0x01'u8, 0x00, 0x00, 0x00])      # Level = 1
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # No idea what to call this. Not padding. Identifying a structure (container/ ctr)?
- rpcReq.add([0x01'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Container pointer (referent id)
- rpcReq.add([0x00'u8, 0x00, 0x02, 0x00])      # No idea what to call this. Not padding. Array size? Wireshark says "count"
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Buffer pointer
+ let container = SHARE_INFO_1_CONTAINER(EntriesRead: 0x00_02_00_00, Buffer: nil)
+ let enumStruct = ShareEnumUnion(level: Level1, level1: container.addr)
+ 
+ let tempVal = 0x123'u32
+ let rpc = NetrShareEnum(servername, addr enumStruct)
+ #let rpc = NetrShareEnum(servername, addr enumStruct, 0xFFFFFFFF'u32)
+ rpcReq.add(rpc)
 
- # Max Buffer
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
-
- # Resume Handle
- rpcReq.add([0xff'u8, 0xff, 0xff, 0xff, 0x00'u8, 0x00, 0x00, 0x00]) # Referent ID
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Resume Handle Value
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding ?
+ # Print hex dump for verification
+ echo "Encoded data (hex):"
+ for i, b in rpc:
+  stdout.write(fmt"{b:02x} ")
+  if (i + 1) mod 16 == 0:
+    echo ""
 
  var tmp16: array[2, uint8]
  let rpcReqLen16 = rpcReq.len.uint16
-
+ #let rpcReqLen16 = 112'u16
  # Adjust frag length
  littleEndian16(tmp16[0].addr, rpcReqLen16.addr)
  rpcReq[8..9] = tmp16
