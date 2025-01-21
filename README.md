@@ -1,6 +1,67 @@
 # Nimpacket
 The start of an SMB library written in Nim. Lots of things need to be improved. Lots of things need to be tested. Lots of things need to be implemented. Expect bugs. Expect breaking changes. This is anything, but, a stable project. PRs are, of course, welcome!
 
+## Dev Branch Current Updates
+- NDR encoder (no decoder yet)
+  Added rudimentary support in `RPC/rpc.nim` and `smb/smb.nim`. It needs more (a **lot** more) testing, but it does seemingly work so far (*for me*). NDR is a bit difficult to understand and has special encoding rules for certain cases, so... *expect bugs here especially*.
+  Example Usage:
+  ```nim
+   type
+    SHARE_INFO_1* {.packed.} = object
+    shi1_netname*: string
+    shi1_type*: uint32
+    shi1_remark*: string
+
+  SHARE_INFO_1_CONTAINER* {.packed.} = object
+    EntriesRead*: uint32
+    Buffer*: ptr SHARE_INFO_1
+  
+  ShareEnumLevel* = enum
+    Level0 = 0
+    Level1 = 1
+    Level2 = 2
+    Level501 = 501
+    Level502 = 502
+    Level503 = 503
+
+  # Tagged Union
+  ShareEnumUnion* {.packed.} = object
+    case level*: ShareEnumLevel
+    of Level0:
+      level0*: pointer
+    of Level1:
+      level1*: ptr SHARE_INFO_1_CONTAINER
+    of Level2:
+      level2*: pointer
+    of Level501:
+      level501*: pointer
+    of Level502:
+      level502*: pointer
+    of Level503:
+      level503*: pointer
+  
+  proc NetrShareEnum*(ServerName: string, InfoStruct: ptr ShareEnumUnion, PreferedMaximumLength: uint32 = cast[uint32](-1), TotalEntries: ptr uint32 = nil, ResumeHandle: ptr uint32 = nil): seq[uint8] =
+  var ctx = NDRContext(data: @[], position: 0, nextRefId: 1, pointerMap: initTable[pointer, uint32]())
+  
+  # Encode ServerName as unique string
+  encodeString(ctx, ServerName, true)
+  
+  # Encode InfoStruct pointer and its contents
+  encodePointer(ctx, InfoStruct)
+  
+  # Encode remaining parameters
+  encodePointer(ctx, TotalEntries) # WireShark seems to show this parameter prior to prefMaxLength, although MSDN says the opposite
+  encodeUint32(ctx, PreferedMaximumLength)
+  encodePointer(ctx, ResumeHandle)
+
+  when isMainModule:
+    result = ctx.data
+    let servername = r"\\" & client.host
+    let container = SHARE_INFO_1_CONTAINER(EntriesRead: 0x00_02_00_00, Buffer: nil)
+    let enumStruct = ShareEnumUnion(level: Level1, level1: container.addr)
+    let rpc = NetrShareEnum(servername, addr enumStruct)
+  ```
+  
 ## Usage
 Add the line `import ./smb/smb` into your program. For now, that's it. The SMB folder here imports the others, so you shouldn't need to do so manually. This will eventually change as more functionality is added.
 
@@ -63,6 +124,6 @@ when isMainModule:
 - SMB 3.x Support
 - NTLMv1 Authentication (the most likely to come any time soon)
 - Kerberos Authentication
-- NDR Encoder/Decoder
+- NDR Encoder/Decoder (In progress)
 - ASN.1 BER Encoder/Decoder
 - Test on Windows host
