@@ -41,25 +41,27 @@ type
       level503*: pointer
   
   proc NetrShareEnum*(ServerName: string, InfoStruct: ptr ShareEnumUnion, PreferedMaximumLength: uint32 = cast[uint32](-1), TotalEntries: ptr uint32 = nil, ResumeHandle: ptr uint32 = nil): seq[uint8] =
-  var ctx = NDRContext(data: @[], position: 0, nextRefId: 1, pointerMap: initTable[pointer, uint32]())
+    var ctx = NDRContext(data: @[], position: 0, nextRefId: 1, pointerMap: initTable[pointer, uint32]())
   
-  # Encode ServerName as unique string
-  encodeString(ctx, ServerName, true)
+    # Encode ServerName as unique string
+    encodeString(ctx, ServerName, true)
   
-  # Encode InfoStruct pointer and its contents
-  encodePointer(ctx, InfoStruct)
+    # Encode InfoStruct pointer and its contents
+    encodePointer(ctx, InfoStruct)
   
-  # Encode remaining parameters
-  encodePointer(ctx, TotalEntries) # WireShark seems to show this parameter prior to prefMaxLength, although MSDN says the opposite
-  encodeUint32(ctx, PreferedMaximumLength)
-  encodePointer(ctx, ResumeHandle)
+    # Encode remaining parameters
+    encodePointer(ctx, TotalEntries) # WireShark seems to show this parameter prior to prefMaxLength, although MSDN says the opposite
+    encodeUint32(ctx, PreferedMaximumLength)
+    encodePointer(ctx, ResumeHandle)
+
+    result = ctx.data
 
   when isMainModule:
-    result = ctx.data
     let servername = r"\\" & client.host
     let container = SHARE_INFO_1_CONTAINER(EntriesRead: 0x00_02_00_00, Buffer: nil)
     let enumStruct = ShareEnumUnion(level: Level1, level1: container.addr)
     let rpc = NetrShareEnum(servername, addr enumStruct)
+    echo rpc
   ```
   
 ## Usage
