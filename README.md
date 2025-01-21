@@ -5,13 +5,13 @@ The start of an SMB library written in Nim. Lots of things need to be improved. 
 - NDR encoder (no decoder yet)
   Added rudimentary support in `RPC/rpc.nim` and `smb/smb.nim`. It needs more (a **lot** more) testing, but it does seemingly work so far (*for me*). NDR is a bit difficult to understand and has special encoding rules for certain cases, so... *expect bugs here especially*.
   Example Usage:
-  ```nim
-   type
-    SHARE_INFO_1* {.packed.} = object
+```nim
+type
+  SHARE_INFO_1* {.packed.} = object
     shi1_netname*: string
     shi1_type*: uint32
     shi1_remark*: string
-
+  
   SHARE_INFO_1_CONTAINER* {.packed.} = object
     EntriesRead*: uint32
     Buffer*: ptr SHARE_INFO_1
