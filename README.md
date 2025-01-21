@@ -8,6 +8,7 @@ The start of an SMB library written in Nim. Lots of things need to be improved. 
 
   Example Usage:
 ```nim
+# Define structures according to MSDN as needed for the function 
 type
   SHARE_INFO_1* {.packed.} = object
     shi1_netname*: string
@@ -41,21 +42,32 @@ type
       level502*: pointer
     of Level503:
       level503*: pointer
-  
+
+  # Function signature according to MSDN
+  # In this case, there are default values for ease of use. This is not mandatory
   proc NetrShareEnum*(ServerName: string, InfoStruct: ptr ShareEnumUnion, PreferedMaximumLength: uint32 = cast[uint32](-1), TotalEntries: ptr uint32 = nil, ResumeHandle: ptr uint32 = nil): seq[uint8] =
+    # Instantiate the NDRContext structure like so
+    # These values (excluding pointerMap) can be changed or left alone. Up to you
     var ctx = NDRContext(data: @[], position: 0, nextRefId: 1, pointerMap: initTable[pointer, uint32]())
-  
+
+    # Encode function arguments
+    # Should be self explanatory. Strings are encoded with the `encodeString()` function. Keep in mind, they will be encoded as UTF-16LE with a null terminator. The final argument is whether or not the string is marked as "unique" or not. Follow MSDN for this.
+
     # Encode ServerName as unique string
     encodeString(ctx, ServerName, true)
-  
+
+    # Pointers are encoded with the `encodePointer()` function. These should **not** be the `pointer` type, but the `ptr T` type. 
     # Encode InfoStruct pointer and its contents
     encodePointer(ctx, InfoStruct)
   
     # Encode remaining parameters
     encodePointer(ctx, TotalEntries) # WireShark seems to show this parameter prior to prefMaxLength, although MSDN says the opposite
+
+    # There are actually a few different encoding functions for integers. For now, just use `encodeUint32()`
     encodeUint32(ctx, PreferedMaximumLength)
     encodePointer(ctx, ResumeHandle)
 
+    # Lastly, there *is* an `encodeStruct()` function for structures as well. Use it for tagged unions as well. 
     result = ctx.data
 
   when isMainModule:
