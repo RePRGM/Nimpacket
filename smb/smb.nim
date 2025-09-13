@@ -220,12 +220,6 @@ proc sendNetbiosHeader*(client: SmbClient, length: uint32) =
   header[2] = uint8((length shr 8) and 0xFF) # Middle byte
   header[1] = uint8((length shr 16) and 0xFF) # High byte
   
-  #[
-  stdout.write("Sending NetBIOS Header: ")
-  for headerByte in header: stdout.write(toHex(headerByte,2))
-  echo "\n"
-  ]#
-
   discard client.socket.send(header[0].addr, 4)
 
 proc parseSessionSetupResponse*(response: seq[uint8]): tuple[status: uint32, sessID: uint64, securityBlob: seq[uint8]] =
@@ -269,13 +263,6 @@ proc recvSMB2Message*(client: SmbClient): seq[uint8] =
   let payloadLength = uint32(cast[uint8](header[3])) or
                    (uint32(cast[uint8](header[2])) shl 8) or
                    (uint32(cast[uint8](header[1])) shl 16)
-  
-  #[
-  echo "Received NetBIOS header, payload length: ", payloadLength
-  stdout.write("Header bytes: ")
-  for i in countup(0, 3): stdout.write(cast[byte](header[i]).toHex(2))
-  stdout.write("\n")
-  ]#
 
   var payload = newString(payloadLength)
   let payloadRead = client.socket.recv(payload, payloadLength.int)
@@ -283,13 +270,6 @@ proc recvSMB2Message*(client: SmbClient): seq[uint8] =
     echo "[-] Failed to Read Complete Payload! Got ", payloadRead, " of ", payloadLength, " Bytes"
     return @[]
   
-  #[
-  echo "Received payload of ", payloadRead, " bytes"
-  stdout.write("Payload: ")
-  for i in 0 ..< payloadRead: stdout.write(cast[byte](payload[i]).toHex(2))
-  stdout.write("\n")
-  ]#
-
   result = cast[seq[uint8]](payload)
 
 proc send*(client: SmbClient, request: seq[uint8]): tuple[response: seq[uint8], status: uint32] =
@@ -306,24 +286,13 @@ proc send*(client: SmbClient, request: seq[uint8]): tuple[response: seq[uint8], 
 proc sendSMB2SessionSetup*(client: SmbClient, token: seq[uint8]): seq[uint8] =
   var initialReq = client.newSessionSetupRequest()
   initialReq.data.add(token)
-  #echo "TOken length: ", token.len
   var reqBytes = initialReq.withOffset(88).withLength(token.len.uint16).build()
   var (setupRes, setupStatus) = client.send(reqBytes)
-
-  #[
-  echo "Sending session setup packet of size: ", smbPayload.len
-  stdout.write("Session setup packet: ")
-  for b in smbPayload:
-    stdout.write(b.toHex(2))
-  stdout.write("\n")
-  ]#
 
   return setupRes
 
 proc initSMBSession*(client: SmbClient, username, ntlmHash: string): bool =
-# sessionSetup() replacement code
-#  if msgType == 1:
-    # For Type 1 - NegTokenInit
+  # For Type 1 - NegTokenInit
   let type1Msg = createNTLMMsg(1, client.ntlmState.negotiateFlags.addr)
   
   var negTokenInit = SpnegoNegTokenInit()
@@ -340,8 +309,6 @@ proc initSMBSession*(client: SmbClient, username, ntlmHash: string): bool =
   let negoResponse = client.sendSMB2SessionSetup(token)
   let (status, sessionID, securityBlob) = parseSessionSetupResponse(negoResponse)
 
-  echo "Security Blob: "
-  dumpHex(securityBlob)
   client.sessionId = sessionID
 
   if status == 0xC0000016.uint32:
@@ -350,20 +317,11 @@ proc initSMBSession*(client: SmbClient, username, ntlmHash: string): bool =
     
     let type3Msg = createNTLMMsg(3, client.ntlmState.negotiateFlags.addr, username, targetName, ntlmv2Response)
 
-  #elif msgType == 3:
     # For Type 3 - NegTokenResp (without negotiation state)
     var negTokenResp = SpnegoNegTokenResp()
     negTokenResp.responseToken = some(type3Msg)
-    # Don't set negState to match your original
     
     let authTkn = buildNegTokenResp(negTokenResp)
-
-    # Debug the structure
-    echo "\nType 3 SPNEGO Token (first 64 bytes):"
-    for i in 0..<min(64, authTkn.len):
-      stdout.write(authTkn[i].toHex(2) & " ")
-      if (i + 1) mod 16 == 0: echo ""
-    echo "\nTotal length: ", authTkn.len
 
     let authResponse = client.sendSMB2SessionSetup(authTkn)
 
