@@ -1,10 +1,10 @@
-import std/[net, strutils, endians]
+import std/[net, strutils, endians, strformat, tables, options] 
 import hashlib/rhash/[md4, md5]
 import 
   ../NLMP/nlmp, 
   ../utils/utils,
   ../RPC/rpc, 
-  ../GSSAPI/gssapi,
+  ../ASN1/gssapi/main,
   ./types
 
 from std/sequtils import concat, mapIt, toSeq
@@ -320,49 +320,55 @@ proc sendSMB2SessionSetup*(client: SmbClient, token: seq[uint8]): seq[uint8] =
 
   return setupRes
 
-proc sessionSetup*(client: SmbClient, username: string, ntlmHash: string): bool =
-  # Initial Session Setup Request - NTLM Negotiate Message
-  let spnegoToken = createSpnegoToken(createNTLMMsg(1, client.ntlmState.negotiateFlags.addr), 1)
-
-  #[
-  stdout.write("NTLM Negotiate Message: ")
-  for ntlmMsgByte in spnegoToken: stdout.write(toHex(ntlmMsgByte, 2))
-  echo "\n"
-  ]#
-
-  let negoResponse = client.sendSMB2SessionSetup(spnegoToken)
-  # Parse response for NTLM Challenge
+proc initSMBSession*(client: SmbClient, username, ntlmHash: string): bool =
+# sessionSetup() replacement code
+#  if msgType == 1:
+    # For Type 1 - NegTokenInit
+  let type1Msg = createNTLMMsg(1, client.ntlmState.negotiateFlags.addr)
+  
+  var negTokenInit = SpnegoNegTokenInit()
+  negTokenInit.mechTypes = @[OID_NTLMSSP]
+  
+  # Add NTLMSSP signature to the message
+  var ntlmWithSig = @[0x4E'u8, 0x54, 0x4C, 0x4D, 0x53, 0x53, 0x50, 0x00]
+  ntlmWithSig.add(type1Msg)
+  negTokenInit.mechToken = some(ntlmWithSig)
+  
+  let spnegoToken = buildNegTokenInit(negTokenInit)
+  let token = wrapGssApiToken(OID_SPNEGO, spnegoToken)
+  
+  let negoResponse = client.sendSMB2SessionSetup(token)
   let (status, sessionID, securityBlob) = parseSessionSetupResponse(negoResponse)
-  #echo "Status: ", toHex(status)
 
+  echo "Security Blob: "
+  dumpHex(securityBlob)
   client.sessionId = sessionID
 
-  if status == 0xC0000016.uint32: 
+  if status == 0xC0000016.uint32:
     let (serverChallenge, targetName, targetInfo) = parseNTLMChallengeMsg(securityBlob)
-    #[
-    echo "\nTarget Name: ", cast[string](targetName)
-    stdout.write("Server Challenge: ")
-    for bytes in serverChallenge: stdout.write(toHex(bytes, 2))
-    echo "\n"
-    ]#
-
-    # Secondary Session Setup Request - NTLM Auth Message
-    # Calculate NTLMv2 Response
     let ntlmv2Response = calculateNTLMv2Response(ntlmHash, username, cast[string](targetName), serverChallenge, targetInfo)
-
-    # Create and send Type 3 message
-    let authTkn = createSpnegoToken(createNTLMMsg(3, client.ntlmState.negotiateFlags.addr, username, targetName, ntlmv2Response), 3)
     
-    #[
-    stdout.write("NTLM Authenticate Message: ")
-    for authTknByte in authTkn: stdout.write(toHex(authTknByte, 2))
-    echo "\n"
-    ]#
+    let type3Msg = createNTLMMsg(3, client.ntlmState.negotiateFlags.addr, username, targetName, ntlmv2Response)
+
+  #elif msgType == 3:
+    # For Type 3 - NegTokenResp (without negotiation state)
+    var negTokenResp = SpnegoNegTokenResp()
+    negTokenResp.responseToken = some(type3Msg)
+    # Don't set negState to match your original
+    
+    let authTkn = buildNegTokenResp(negTokenResp)
+
+    # Debug the structure
+    echo "\nType 3 SPNEGO Token (first 64 bytes):"
+    for i in 0..<min(64, authTkn.len):
+      stdout.write(authTkn[i].toHex(2) & " ")
+      if (i + 1) mod 16 == 0: echo ""
+    echo "\nTotal length: ", authTkn.len
 
     let authResponse = client.sendSMB2SessionSetup(authTkn)
-    
+
     let (authStatus, _, _) = parseSessionSetupResponse(authResponse)
-    return authStatus == 0 
+    return authStatus == 0    
   else: return false
 
 proc recvTreeID*(response: seq[uint8]): uint32 = 
@@ -400,7 +406,7 @@ proc connect*(client: SmbClient, username = "", password = "", ntlmHash = "") =
       negotiateFlags: NTLM_NEGOTIATE_UNICODE or NTLM_NEGOTIATE_NTLM or NTLM_NEGOTIATE_VERSION or NTLM_REQUEST_TARGET or NTLM_NEGOTIATE_OEM
     )
 
-    if not client.sessionSetup(username, actualNtlmHash):
+    if not client.initSMBSession(username, actualNtlmHash):
       client.disconnect()
       raise newException(IOError, "[-] SMB2 Session Setup Failed")
 
@@ -538,35 +544,54 @@ proc sendNetShareEnumAll*(client: SmbClient, fileId: tuple[persistent, volatile:
  var rpcReq = newSeqUninit[uint8](24)
  copyMem(rpcReq[0].addr, rpcRequest.addr, sizeof(rpcRequest))
 
- # Server name parameter
- rpcReq.add([0x00'u8, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00])  # Referent ID
- rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Max count
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Offset
- rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Actual count
+ ## Server name parameter
+ #rpcReq.add([0x00'u8, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00])  # Referent ID
+ #rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Max count
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Offset
+ #rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Actual count
+ #
+ ## Server name string
+ #rpcReq.add(toUtf16LE("\\\\" & client.host & "\0"))
+ #
+ ## Level and share info
+ #rpcReq.add([0x01'u8, 0x00, 0x00, 0x00])      # Level = 1
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # No idea what to call this. Not padding. Identifying a structure (container/ ctr)?
+ #rpcReq.add([0x01'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Container pointer (referent id)
+ #rpcReq.add([0x00'u8, 0x00, 0x02, 0x00])      # No idea what to call this. Not padding. Array size? Wireshark says "count"
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Buffer pointer
+#
+ ## Max Buffer
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
+#
+ ## Resume Handle
+ #rpcReq.add([0xff'u8, 0xff, 0xff, 0xff, 0x00'u8, 0x00, 0x00, 0x00]) # Referent ID
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Resume Handle Value
+ #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding ?
  
- # Server name string
- rpcReq.add(toUtf16LE("\\\\" & client.host & "\0"))
+ var ctx = NDRContext(data: @[], position: 0, nextRefId: 1, pointerMap: initTable[pointer, uint32]())
+ encodeInt32(ctx, Level1.ord)
+ #echo "ctx.data (Level1 Enum): ", ctx.data
+ let servername = r"\\" & client.host
  
- # Level and share info
- rpcReq.add([0x01'u8, 0x00, 0x00, 0x00])      # Level = 1
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # No idea what to call this. Not padding. Identifying a structure (container/ ctr)?
- rpcReq.add([0x01'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Container pointer (referent id)
- rpcReq.add([0x00'u8, 0x00, 0x02, 0x00])      # No idea what to call this. Not padding. Array size? Wireshark says "count"
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Buffer pointer
+ let container = SHARE_INFO_1_CONTAINER(EntriesRead: 0x00_02_00_00, Buffer: nil)
+ let enumStruct = ShareEnumUnion(level: Level1, level1: container.addr)
+ 
+ let rpc = NetrShareEnum(servername, addr enumStruct)
+ #let rpc = NetrShareEnum(servername, addr enumStruct, 0xFFFFFFFF'u32)
+ rpcReq.add(rpc)
 
- # Max Buffer
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
-
- # Resume Handle
- rpcReq.add([0xff'u8, 0xff, 0xff, 0xff, 0x00'u8, 0x00, 0x00, 0x00]) # Referent ID
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Resume Handle Value
- rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding ?
+ # Print hex dump for verification
+ #echo "Encoded data (hex):"
+ #for i, b in rpc:
+ # stdout.write(fmt"{b:02x} ")
+ # if (i + 1) mod 16 == 0:
+ #   echo ""
 
  var tmp16: array[2, uint8]
  let rpcReqLen16 = rpcReq.len.uint16
-
+ #let rpcReqLen16 = 112'u16
  # Adjust frag length
  littleEndian16(tmp16[0].addr, rpcReqLen16.addr)
  rpcReq[8..9] = tmp16
