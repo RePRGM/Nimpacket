@@ -17,32 +17,33 @@ when isMainModule:
 | |\  | | | | | | | |_) | (_| | (__|   <  __/ |_  | |___| | |  __/ | | | |_ 
 |_| \_|_|_| |_| |_| .__/ \__,_|\___|_|\_\___|\__|  \____|_|_|\___|_| |_|\__|
                   |_|                                                       """     
-     # Find max length (dividing by 2 for UTF-16LE)
-     var maxLen = 10
-     for share in shares:
-       let charCount = share.name.len div 2  # UTF-16LE uses 2 bytes per char
-       if charCount > maxLen:
-         maxLen = charCount
-     
-     let descCol = maxLen + 5
-     
-     echo "Share Name" & " ".repeat(descCol - "Share Name".len) & "Description"
-     echo "-".repeat(descCol + 40)
-     
-     for share in shares:
-       # Write the share name as-is (will display correctly if terminal handles UTF-16LE)
-       stdout.setForegroundColor(fgCyan)
-       stdout.write share.name
-       stdout.resetAttributes()
-       
-       # Calculate padding based on character count, not byte count
-       let charCount = share.name.len div 2
-       let spaces = descCol - charCount
-       stdout.write " ".repeat(spaces)
-       
-       if share.description.len > 0:
-         stdout.write share.description
-       stdout.write "\n"
+     if shares.len == 0:
+      echo "No shares found!"
+     else:
+      var maxLen = 10
+      for share in shares:
+        let charCount = share.netName.len
+        if charCount > maxLen:
+          maxLen = charCount
+      
+      let descCol = maxLen + 5
+      
+      echo "Share Name" & " ".repeat(descCol - "Share Name".len) & "Description"
+      echo "-".repeat(descCol + 40)
+      
+      for share in shares:
+        # Write the share name as-is (will display correctly if terminal handles UTF-16LE)
+        stdout.setForegroundColor(fgCyan)
+        stdout.write share.netName
+        stdout.resetAttributes()
+        
+        let charCount = share.netName.len
+        let spaces = descCol - charCount
+        stdout.write " ".repeat(spaces)
+        
+        if share.remark.len > 0:
+          stdout.write share.remark
+        stdout.write "\n"
   except: echo "[-] Error: ", getCurrentExceptionMsg()
   finally: client.disconnect()
 
