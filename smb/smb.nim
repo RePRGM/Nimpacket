@@ -3,6 +3,7 @@ import hashlib/rhash/[md4, md5]
 import 
   ../NLMP/nlmp, 
   ../utils/utils,
+  ../RPC/ndr,
   ../RPC/rpc, 
   ../ASN1/gssapi/main,
   ./types
@@ -100,7 +101,7 @@ proc newSrvSvcRPCBind*(): seq[uint8] =
   var bindPDU = PDUBind()
   bindPDU.header.version = 5
   bindPDU.header.minorVersion = 0
-  bindPDU.header.pType = 11
+  bindPDU.header.pType = ptBind
   bindPDU.header.pFlags = 3
   bindPDU.header.dRep = [0x10'u8, 0, 0, 0]
   bindPDU.header.fragLength = 72
@@ -220,6 +221,12 @@ proc sendNetbiosHeader*(client: SmbClient, length: uint32) =
   header[2] = uint8((length shr 8) and 0xFF) # Middle byte
   header[1] = uint8((length shr 16) and 0xFF) # High byte
   
+  #[
+  stdout.write("Sending NetBIOS Header: ")
+  for headerByte in header: stdout.write(toHex(headerByte,2))
+  echo "\n"
+  ]#
+
   discard client.socket.send(header[0].addr, 4)
 
 proc parseSessionSetupResponse*(response: seq[uint8]): tuple[status: uint32, sessID: uint64, securityBlob: seq[uint8]] =
@@ -263,6 +270,13 @@ proc recvSMB2Message*(client: SmbClient): seq[uint8] =
   let payloadLength = uint32(cast[uint8](header[3])) or
                    (uint32(cast[uint8](header[2])) shl 8) or
                    (uint32(cast[uint8](header[1])) shl 16)
+  
+  #[
+  echo "Received NetBIOS header, payload length: ", payloadLength
+  stdout.write("Header bytes: ")
+  for i in countup(0, 3): stdout.write(cast[byte](header[i]).toHex(2))
+  stdout.write("\n")
+  ]#
 
   var payload = newString(payloadLength)
   let payloadRead = client.socket.recv(payload, payloadLength.int)
@@ -270,6 +284,13 @@ proc recvSMB2Message*(client: SmbClient): seq[uint8] =
     echo "[-] Failed to Read Complete Payload! Got ", payloadRead, " of ", payloadLength, " Bytes"
     return @[]
   
+  #[
+  echo "Received payload of ", payloadRead, " bytes"
+  stdout.write("Payload: ")
+  for i in 0 ..< payloadRead: stdout.write(cast[byte](payload[i]).toHex(2))
+  stdout.write("\n")
+  ]#
+
   result = cast[seq[uint8]](payload)
 
 proc send*(client: SmbClient, request: seq[uint8]): tuple[response: seq[uint8], status: uint32] =
@@ -286,13 +307,24 @@ proc send*(client: SmbClient, request: seq[uint8]): tuple[response: seq[uint8], 
 proc sendSMB2SessionSetup*(client: SmbClient, token: seq[uint8]): seq[uint8] =
   var initialReq = client.newSessionSetupRequest()
   initialReq.data.add(token)
+  #echo "TOken length: ", token.len
   var reqBytes = initialReq.withOffset(88).withLength(token.len.uint16).build()
   var (setupRes, setupStatus) = client.send(reqBytes)
+
+  #[
+  echo "Sending session setup packet of size: ", smbPayload.len
+  stdout.write("Session setup packet: ")
+  for b in smbPayload:
+    stdout.write(b.toHex(2))
+  stdout.write("\n")
+  ]#
 
   return setupRes
 
 proc initSMBSession*(client: SmbClient, username, ntlmHash: string): bool =
-  # For Type 1 - NegTokenInit
+# sessionSetup() replacement code
+#  if msgType == 1:
+    # For Type 1 - NegTokenInit
   let type1Msg = createNTLMMsg(1, client.ntlmState.negotiateFlags.addr)
   
   var negTokenInit = SpnegoNegTokenInit()
@@ -309,6 +341,9 @@ proc initSMBSession*(client: SmbClient, username, ntlmHash: string): bool =
   let negoResponse = client.sendSMB2SessionSetup(token)
   let (status, sessionID, securityBlob) = parseSessionSetupResponse(negoResponse)
 
+  #echo "Security Blob: "
+  #dumpHex(securityBlob)
+
   client.sessionId = sessionID
 
   if status == 0xC0000016.uint32:
@@ -317,11 +352,20 @@ proc initSMBSession*(client: SmbClient, username, ntlmHash: string): bool =
     
     let type3Msg = createNTLMMsg(3, client.ntlmState.negotiateFlags.addr, username, targetName, ntlmv2Response)
 
+  #elif msgType == 3:
     # For Type 3 - NegTokenResp (without negotiation state)
     var negTokenResp = SpnegoNegTokenResp()
     negTokenResp.responseToken = some(type3Msg)
+    # Don't set negState to match your original
     
     let authTkn = buildNegTokenResp(negTokenResp)
+
+    # Debug the structure
+    #echo "\nType 3 SPNEGO Token (first 64 bytes):"
+    #for i in 0..<min(64, authTkn.len):
+    #  stdout.write(authTkn[i].toHex(2) & " ")
+    #  if (i + 1) mod 16 == 0: echo ""
+    #echo "\nTotal length: ", authTkn.len
 
     let authResponse = client.sendSMB2SessionSetup(authTkn)
 
@@ -348,7 +392,7 @@ proc connect*(client: SmbClient, username = "", password = "", ntlmHash = "") =
     var (negRes, negStatus) = client.send(negReq)
     if negStatus != 0:
       client.disconnect()
-      raise newException(IOError, "[-] SMB2 Negotiate Failed with Error 0x" & toHex(negStatus))
+      raise newException(IOError, "SMB2 Negotiate Failed with Error 0x" & toHex(negStatus))
 
     #if not client.sendSMB2Negotiate():
     #  client.disconnect()
@@ -366,13 +410,13 @@ proc connect*(client: SmbClient, username = "", password = "", ntlmHash = "") =
 
     if not client.initSMBSession(username, actualNtlmHash):
       client.disconnect()
-      raise newException(IOError, "[-] SMB2 Session Setup Failed")
+      raise newException(IOError, "SMB2 Session Setup Failed")
 
     echo "\n[+] Successfully Authenticated as ", client.ntlmState.username
 
 proc connectToShare*(client: SmbClient, share: string): void =
   if not client.connected:
-    raise newException(IOError, "[-] Not Connected to Server")
+    raise newException(IOError, "Not Connected to Server")
   
   echo "\n[*] Connecting to \\\\", client.host, r"\", share
   let sharePath = toUtf16LE(r"\\" & client.host & r"\" & share)
@@ -446,133 +490,253 @@ proc readBindAck*(client: SmbClient, fileId: tuple[persistent, volatile: uint64]
   var (readRes, readResStatus) = client.send(readReqBytes)
   return readResStatus == 0
 
-proc parseShares*(data: openArray[uint8]): seq[Share] =
-  result = newSeq[Share]()
-  var pos = 0x140 #0x140
-  var currentShare = Share()
-  var isName = true  # Track whether we're reading a name or description
+proc parseNDR64String*(buf: NDRBuffer): string =
+  ## Parse a single NDR64 conformant varying string
+  ## NDR64 string header: 24 bytes total
+  ## - 4 bytes maxCount + 4 bytes padding
+  ## - 4 bytes offset + 4 bytes padding  
+  ## - 4 bytes actualCount + 4 bytes padding
   
-  while pos + 8 <= data.len:
-    # Read string length
-    let length = readUint32Le(data, pos)
-    pos += 8
+  let maxCount = decodeUint32(buf)
+  discard decodeUint32(buf)  # padding
+  
+  let offset = decodeUint32(buf)
+  discard decodeUint32(buf)  # padding
+  
+  let actualCount = decodeUint32(buf)
+  discard decodeUint32(buf)  # padding
+  
+  if actualCount == 0:
+    return ""
+  
+  # Read UTF-16LE string data
+  result = ""
+  for i in 0..<actualCount:
+    let ch = decodeUint16(buf)
+    if ch != 0 and ch < 128:
+      result.add(chr(ch))
+    elif ch != 0:
+      result.add('?')  # Non-ASCII placeholder
+  
+  # Apply padding to align string data to 8-byte boundary
+  let stringBytes = actualCount.int * 2
+  let paddingNeeded = if stringBytes mod 8 == 0: 0 else: 8 - (stringBytes mod 8)
+  
+  for i in 0..<paddingNeeded:
+    discard decodeUint8(buf)
+
+proc parseShares*(response: seq[uint8]): seq[ShareInfo1] =
+  #debugEcho "\n=== parseShares START ==="
+  #debugEcho "Response length: ", response.len
+  
+  # Extract RPC response from SMB2 IOCTL response
+  let outputOffset = response[96] or (response[97].uint32 shl 8) or 
+                     (response[98].uint32 shl 16) or (response[99].uint32 shl 24)
+  let outputCount = response[100] or (response[101].uint32 shl 8) or 
+                    (response[102].uint32 shl 16) or (response[103].uint32 shl 24)
+  
+  #debugEcho fmt"Output Offset: {outputOffset}, Output Count: {outputCount}"
+  
+  if outputCount == 0:
+    #debugEcho "No output data"
+    return @[]
+  
+  let rpcResponse = response[outputOffset.int..<outputOffset.int + outputCount.int]
+  let buf = newNDRBuffer()
+  buf.data = rpcResponse
+  
+  # Skip PDU header and response fields
+  let header = decodePDUHeader(buf)
+  #debugEcho fmt"PDU Type: {header.pType}, Frag Length: {header.fragLength}"
+  
+  discard decodeUint32(buf)  # allocHint
+  discard decodeUint16(buf)  # contextID
+  discard decodeUint8(buf)   # cancelCount
+  discard decodeUint8(buf)   # reserved
+  
+  # Main structure
+  let level = decodeUint32(buf)
+  let discriminant = decodeUint32(buf)
+  let containerPtr = decodeUint32(buf)
+  let totalEntriesPtr = decodeUint32(buf)
+  let resumeHandlePtr = decodeUint32(buf)
+  
+  #debugEcho fmt"Level: {level}, ContainerPtr: 0x{containerPtr:08x}"
+  #debugEcho fmt"Buffer position after main structure: {buf.position}"
+  
+  # Deferred data section
+  
+  # ResumeHandle's deferred data (if non-null)
+  if resumeHandlePtr != 0:
+    let resumeVal = decodeUint32(buf)
+    #debugEcho fmt"Resume handle value: {resumeVal}"
+  
+  # Container's deferred data
+  if containerPtr != 0:
+    let entriesRead = decodeUint32(buf)
+    #debugEcho fmt"EntriesRead: {entriesRead}"
     
-    if length == 0 or length > 100:  # Sanity check
-      continue
+    discard decodeUint32(buf)  # Padding
     
-    # Read the string
-    let (str, bytesRead) = readUtf16String(data, pos, int(length))
-    pos += bytesRead
+    let bufferPtr = decodeUint32(buf)
+    #debugEcho fmt"BufferPtr: 0x{bufferPtr:08x}"
     
-    if str.len > 0:
-      if isName:
-        # Starting new share
-        if currentShare.name.len > 0:
-          result.add(currentShare)
-        currentShare = Share()
-        currentShare.name = str
-      else:
-        # Add description to current share
-        currentShare.description = str
-        result.add(currentShare)
-        currentShare = Share()
+    discard decodeUint32(buf)  # Padding
+    
+    if bufferPtr != 0:
+      # The array count
+      let arrayCount = decodeUint32(buf)
+      #debugEcho fmt"Array count: {arrayCount}"
+      
+      discard decodeUint32(buf)  # Skip padding after array count
+      
+      # Read ShareInfo1 structures (using NDR64 format)
+      result = @[]
+      var shareData: seq[tuple[netNameRef: uint64, shareType: uint32, remarkRef: uint64]] = @[]
+      
+      #debugEcho fmt"Reading {arrayCount} ShareInfo1 structures starting at position {buf.position}..."
+      
+      for i in 0..<arrayCount:
+        # In NDR64, pointer references are 8 bytes
+        let netNameRef = decodeUint64(buf)  # 8-byte pointer reference
+        let shareType = decodeUint32(buf)   # 4-byte share type
+        discard decodeUint32(buf)            # 4-byte padding
+        let remarkRef = decodeUint64(buf)    # 8-byte pointer reference
         
-    # Skip 8 bytes between each string
-    pos += 8
-    isName = not isName
+        shareData.add((netNameRef, shareType, remarkRef))
+        #debugEcho fmt"Share {i}: name=0x{netNameRef:016x}, type=0x{shareType:08x}, remark=0x{remarkRef:016x}"
+      
+      # Read string pairs for each share
+      for i in 0..<arrayCount:
+        var share = ShareInfo1()
+        
+        # Name and remark are in pairs, with 8-byte alignment after each string
+        if shareData[i].netNameRef != 0:
+          share.netName = parseNDR64String(buf)
+          #debugEcho fmt"  Read netName: {share.netName}"
+        
+        if shareData[i].remarkRef != 0:
+          share.remark = parseNDR64String(buf)
+          #debugEcho fmt"  Read remark: {share.remark}"
+        elif shareData[i].remarkRef == 0:
+          # Empty remark still has a header with actualCount=1 (just null terminator)
+          share.remark = parseNDR64String(buf)
+          #debugEcho fmt"  Read empty remark"
+        
+        # Set share type
+        share.shareType = cast[ShareType](shareData[i].shareType)
+        
+        result.add(share)
   
-  # Add final share if pending
-  if currentShare.name.len > 0:
-    result.add(currentShare)
+  #debugEcho "=== parseShares END ==="
+  return result
+
+proc encodeNDR32String*(buf: NDRBuffer, str: string) =
+  ## Encode a string in NDR32 conformant/varying format
+  ## Header is 12 bytes: maxCount(4) + offset(4) + actualCount(4)
+  
+  let wideStr = str.toUtf16LE()  # Convert to UTF-16LE
+  let charCount = (wideStr.len div 2).uint32  # Number of wide characters including null
+  
+  # Write 12-byte header
+  encodeUint32(buf, charCount)  # maxCount
+  encodeUint32(buf, 0)          # offset
+  encodeUint32(buf, charCount)  # actualCount
+  
+  # Write string data
+  for b in wideStr:
+    encodeUint8(buf, b)
+  
+  # Apply padding to align to 4-byte boundary
+  let alignment = buf.position mod 4
+  if alignment != 0:
+    for i in 0..<(4 - alignment):
+      encodeUint8(buf, 0)
 
 proc sendNetShareEnumAll*(client: SmbClient, fileId: tuple[persistent, volatile: uint64]): seq[uint8] =
- var rpcRequest = PDURequest()
- rpcRequest.header.version = 5
- rpcRequest.header.minorVersion = 0
- rpcRequest.header.pType = 0
- rpcRequest.header.pFlags = 3
- rpcRequest.header.dRep = [0x10'u8, 0, 0, 0]
- rpcRequest.header.fragLength = 0x6c
- rpcRequest.header.authLength = 0
- rpcRequest.header.callID = 2
- rpcRequest.allocHint = 0x70
- rpcRequest.contextID = 1
- rpcRequest.opNum = 15
-
- var rpcReq = newSeqUninit[uint8](24)
- copyMem(rpcReq[0].addr, rpcRequest.addr, sizeof(rpcRequest))
-
- ## Server name parameter
- #rpcReq.add([0x00'u8, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00])  # Referent ID
- #rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Max count
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Offset
- #rpcReq.add([0x0c'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])      # Actual count
- #
- ## Server name string
- #rpcReq.add(toUtf16LE("\\\\" & client.host & "\0"))
- #
- ## Level and share info
- #rpcReq.add([0x01'u8, 0x00, 0x00, 0x00])      # Level = 1
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # No idea what to call this. Not padding. Identifying a structure (container/ ctr)?
- #rpcReq.add([0x01'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Container pointer (referent id)
- #rpcReq.add([0x00'u8, 0x00, 0x02, 0x00])      # No idea what to call this. Not padding. Array size? Wireshark says "count"
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])  # Buffer pointer
-#
- ## Max Buffer
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding
-#
- ## Resume Handle
- #rpcReq.add([0xff'u8, 0xff, 0xff, 0xff, 0x00'u8, 0x00, 0x00, 0x00]) # Referent ID
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Resume Handle Value
- #rpcReq.add([0x00'u8, 0x00, 0x00, 0x00])      # Padding ?
- 
- var ctx = NDRContext(data: @[], position: 0, nextRefId: 1, pointerMap: initTable[pointer, uint32]())
- encodeInt32(ctx, Level1.ord)
- #echo "ctx.data (Level1 Enum): ", ctx.data
- let servername = r"\\" & client.host
- 
- let container = SHARE_INFO_1_CONTAINER(EntriesRead: 0x00_02_00_00, Buffer: nil)
- let enumStruct = ShareEnumUnion(level: Level1, level1: container.addr)
- 
- let rpc = NetrShareEnum(servername, addr enumStruct)
- #let rpc = NetrShareEnum(servername, addr enumStruct, 0xFFFFFFFF'u32)
- rpcReq.add(rpc)
-
- # Print hex dump for verification
- #echo "Encoded data (hex):"
- #for i, b in rpc:
- # stdout.write(fmt"{b:02x} ")
- # if (i + 1) mod 16 == 0:
- #   echo ""
-
- var tmp16: array[2, uint8]
- let rpcReqLen16 = rpcReq.len.uint16
- #let rpcReqLen16 = 112'u16
- # Adjust frag length
- littleEndian16(tmp16[0].addr, rpcReqLen16.addr)
- rpcReq[8..9] = tmp16
- 
- var ioctlReq = client.newIoctlRequest()
- ioctlReq.request.ctlCode = 0x0011C017
- ioctlReq.request.inputCount = rpcReq.len.uint32
- ioctlReq.request.flags = 1
- ioctlReq.data = rpcReq
- copyMem(ioctlReq.request.fileID[0].addr, fileId.persistent.addr, sizeof(fileId.persistent))
- copyMem(ioctlReq.request.fileID[8].addr, fileId.volatile.addr, sizeof(fileId.volatile))
- let ioctlReqBytes = ioctlReq.build()
-
- let (ioctlRes, ioctlResStatus) = client.send(ioctlReqBytes)
- if ioctlResStatus == 0:
-    #echo "Successfully Sent RPC Request (NetrShareEnum)!"
-    #result = parseShares(ioctlRes)
-    result = ioctlRes
- else: echo "[-] Server Returned Error 0x", toHex(ioctlResStatus)
+  let buf = newNDRBuffer()
   
- return result
+  # Create PDU header
+  var header = PDUHeader(
+    version: 5,
+    minorVersion: 0,
+    pType: ptRequest,  # REQUEST
+    pFlags: 3,  # FIRST_FRAG | LAST_FRAG
+    drep: [0x10'u8, 0, 0, 0],  # Little-endian
+    fragLength: 0,  # Will be updated
+    authLength: 0,
+    callId: 2
+  )
+  
+  encodePDUHeader(buf, header)
+  
+  # PDU Request fields
+  encodeUint32(buf, 0x70)  # allocHint
+  encodeUint16(buf, 1)      # contextID
+  encodeUint16(buf, 0x0F)   # opNum (NetrShareEnum)
+  
+  let servername = r"\\" & client.host
+  let wideStr = servername.toUtf16LE() & @[0'u8, 0]  # Add null terminator
+  let charCount = (wideStr.len div 2).uint32
+  
+  # Server name parameter - NDR64 inline string with pointer semantics
+  encodePointerNDR64(buf, 0x00020000)  # Pointer referent
+  encodeUint32NDR64(buf, charCount)     # MaxCount with padding
+  encodeUint32NDR64(buf, 0)             # Offset with padding
+  encodeUint32NDR64(buf, charCount)     # ActualCount with padding
+  
+  # Server name string data
+  for b in wideStr:
+    encodeUint8(buf, b)
+  
+  # Level and share info structure
+  encodeUint32NDR64(buf, 1)            # Level = 1
+  encodeUint32NDR64(buf, 1)            # Union discriminant = 1
+  encodeUint32(buf, 0x00020000)        # InfoStruct pointer referent
+  encodeUint32(buf, 0)                 # EntriesRead = 0
+  encodeUint32NDR64(buf, 0)            # Buffer pointer = NULL
+  
+  # Max Buffer
+  encodeUint32NDR64(buf, 0)            # PrefMaxLen = 0
+  
+  # Resume Handle
+  encodeUint32NDR64(buf, 0xFFFFFFFF'u32)   # Resume handle referent or value
+  encodeUint32NDR64(buf, 0)            # Resume handle value
+  
+  # Update fragLength
+  let totalLen = buf.position.uint16
+  buf.data[8] = uint8(totalLen and 0xFF)
+  buf.data[9] = uint8((totalLen shr 8) and 0xFF)
+  
+  # Debug output
+  #echo fmt"RPC Request ({buf.position} bytes):"
+  #for i in 0..<buf.position:
+  #  stdout.write(fmt"{buf.data[i]:02x} ")
+  #  if (i + 1) mod 16 == 0:
+  #    echo ""
+  #if buf.position mod 16 != 0:
+  #  echo ""
+  
+  # Send IOCTL
+  var ioctlReq = client.newIoctlRequest()
+  ioctlReq.request.ctlCode = 0x0011C017
+  ioctlReq.request.inputCount = buf.position.uint32
+  ioctlReq.request.flags = 1
+  ioctlReq.data = buf.data[0..<buf.position]
+  copyMem(ioctlReq.request.fileID[0].addr, fileId.persistent.addr, sizeof(fileId.persistent))
+  copyMem(ioctlReq.request.fileID[8].addr, fileId.volatile.addr, sizeof(fileId.volatile))
+  
+  let ioctlReqBytes = ioctlReq.build()
+  let (ioctlRes, ioctlResStatus) = client.send(ioctlReqBytes)
+  
+  if ioctlResStatus == 0:
+    result = ioctlRes
+  else:
+    echo "[-] Server Returned Error 0x", toHex(ioctlResStatus)
+  
+  return result
 
-proc listShares*(client: SmbClient): seq[Share] =
+proc listShares*(client: SmbClient): seq[ShareInfo1] =
   #result = @[]
   var fileId: tuple[persistent, volatile: uint64]
   let bindSrvsvc = newSrvSvcRPCBind()
@@ -580,10 +744,9 @@ proc listShares*(client: SmbClient): seq[Share] =
   try:
     # Connect to IPC$
     client.connectToShare("IPC$")
-    
     # Open SRVSVC pipe
     fileId = client.openNamedPipe("srvsvc")
-    
+    echo "\n[+] Opened pipe to SRVSVC!"
     # Bind to SRVSVC interface
     if not client.bindRPC(fileId, bindSrvsvc): return
     
@@ -595,7 +758,8 @@ proc listShares*(client: SmbClient): seq[Share] =
     netShareEnumRes = client.sendNetShareEnumAll(fileId) # Send NetShareEnum request
     if netShareEnumRes.len == 0:
       echo "\n[-] Failed to Retrieve Share List!"
-    else: result = parseShares(netShareEnumRes)
+    else: 
+      result = parseShares(netShareEnumRes)
     return result
     
   finally:
