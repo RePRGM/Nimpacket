@@ -16,18 +16,24 @@ protocol-specific opnums is implemented in Nim itself.
    rpc/       │  client (BIND, AUTH3, REQUEST/RESPONSE, EPM)  │
               │  fragment ─ wrapper (sec_trailer placement)   │
               │  transport (TCP, SMB-named-pipe)              │
-              ├──────────────────────┬────────────────────────┤
-   auth/      │  NTLM (NTOWFv2,      │  SPNEGO (DER, GSS-API  │
-              │   messages, session, │   wrap, NegToken*)     │
-              │   provider, MIC)     │                        │
-              ├──────────────────────┴────────────────────────┤
+              ├──────────────────┬─────────────┬──────────────┤
+   auth/      │  NTLM (NTOWFv2,  │  SPNEGO     │  Kerberos    │
+              │   messages,      │  (DER,      │  (AS, TGS,   │
+              │   session, MIC)  │  GSS wrap,  │  AP-REQ,     │
+              │                  │  NegToken*) │  RC4 + AES)  │
+              ├──────────────────┴─────────────┴──────────────┤
    smb/       │  SMB2 (negotiate, session_setup, tree_connect,│
-              │   create, read, write, IOCTL TRANSCEIVE)      │
+              │   create, read, write, IOCTL TRANSCEIVE) +    │
+              │  SMB3 (3.0 / 3.0.2 / 3.1.1 negotiate, AES-    │
+              │   CMAC signing, AES-CCM transparent encrypt)  │
               ├───────────────────────────────────────────────┤
    ndr/       │  NDR3 + NDR64 (primitives, arrays, strings,   │
               │   pointers, deferred queue, unions, structs)  │
               ├───────────────────────────────────────────────┤
-   crypto/    │  MD4, MD5, HMAC-MD5, RC4, CSPRNG  (pure Nim)  │
+   crypto/    │  MD4, MD5, HMAC-MD5, RC4, CSPRNG,             │
+              │  SHA-1, SHA-256, HMAC-SHA1/256,               │
+              │  AES-128/256, AES-CMAC, AES-CCM,              │
+              │  PBKDF2, SP 800-108 KBKDF       (pure Nim)    │
               ├───────────────────────────────────────────────┤
    common/    │  buffers, endian, UUID, SID, NTSTATUS, UTF-16 │
               └───────────────────────────────────────────────┘
@@ -47,17 +53,26 @@ protocol-specific opnums is implemented in Nim itself.
 - **Validated against impacket** — for cases where credentials
   prevented success, my code's responses are byte-identical to
   impacket's against the same server.
-- **204 tests passing**: 197 unit, 4 loopback integration (TCP, NTLM
+- **Validated against RFC 3961 + RFC 3962 vectors** — n-fold,
+  PBKDF2-HMAC-SHA1, and the AES-128/256 stringToKey worked examples
+  all match bit-exact.
+- **248 tests passing**: ~241 unit, 4 loopback integration (TCP, NTLM
   sign+seal, fragmentation, UDP CLDAP), 3 live env-gated.
+- **Structure-aware fuzzer.** DER/NTLM/SMB2/DCE-RPC/LDAP/Kerberos
+  generators; ~1.6M iterations in 30s with 0 crashes across 19
+  decoder targets.
 - **Zero external dependencies.** Pure-Nim crypto, pure-Nim DER/BER,
   pure-Nim everything.
 
 ## Quickstart
 
 ```bash
-git clone https://example.com/msrpc-nim
-cd msrpc-nim
+git clone https://github.com/RePRGM/Nimpacket
+cd Nimpacket
 nimble test                              # unit + loopback suite
+
+# Property fuzzer (default 2s budget; raise via env):
+MSRPC_FUZZ_BUDGET_MS=30000 nim r --path:src tests/fuzz/fuzz_runner.nim
 
 # Live test against a real Windows host:
 MSRPC_TEST_HOST=10.0.0.5                 \
@@ -169,8 +184,10 @@ examples — `lsarpc` covers everything from `LsarOpenPolicy2` through
 - **Transports are interface-typed.** Drop in a new transport by
   subclassing `rpc.Transport`. The TCP and named-pipe transports
   both satisfy the same shape.
-- **AuthProvider is virtual.** NTLM and SPNEGO ship; Kerberos is a
-  plug-in away.
+- **AuthProvider is virtual.** NTLM, SPNEGO, and Kerberos all ship and
+  implement the same `initialize` / `step` interface, so any of them
+  drops into the same RPC/SMB call sites. SPNEGO can carry either NTLM
+  or Kerberos as its inner mech.
 - **Sign+seal piggy-backs on session state.** `NtlmProvider.role`
   selects client-to-server or server-to-client key direction so the
   same provider can be the client peer or the server peer.
@@ -197,16 +214,21 @@ examples — `lsarpc` covers everything from `LsarOpenPolicy2` through
 | 8 | `LSAPR_TRANSLATED_NAME` needs `alignTo(4)` after `SID_NAME_USE` u16 (the embedded `RPC_UNICODE_STRING` forces 4-alignment) | Mid-decode buffer overrun |
 | 9 | AUTHENTICATE MIC offset depends on whether the `NEGOTIATE_VERSION` flag is *set* (not on the build-time `hasVersion` bool) | MIC patched at wrong offset |
 | 10 | Top-level ref pointers (MIDL `[in,string] T *`) emit **no** referent id on the wire — only top-level unique pointers do (C706 §14.3.10) | `ROpenServiceW` returned a 0x1783 fault until the bogus refid was dropped |
+| 11 | `parseBindAckBody` cast a raw `u16` straight to a 3-value enum, raising `RangeDefect` on any other value | Surfaced by structure-aware fuzzing with a valid RPC PDU prefix — replaced with an explicit range check that raises `ValueError` |
+| 12 | AES-CTS (RFC 3962 §5) wire format is `... \|\| full Cn (16) \|\| truncated Cn-1 (d)`, not the other way around; the high bytes of Cn-1 are recovered via `AES⁻¹(Cn)[d..15] = Cn-1[d..15]` thanks to the zero-padding invariant | First AES round-trip failed; only caught by writing round-trip tests at the lowest layer instead of trusting the spec's prose |
 
 ## Status of MS-* coverage
 
 | Spec | Coverage |
 |---|---|
 | MS-NLMP (NTLM) | NTOWFv1, NTOWFv2, all three messages, sign+seal, MIC, anonymous, client and server roles |
-| MS-SPNG (SPNEGO) | DER encoder, GSS-API wrap, `NegTokenInit` / `NegTokenResp` |
+| MS-SPNG (SPNEGO) | DER encoder, GSS-API wrap, `NegTokenInit` / `NegTokenResp`, NTLM or Kerberos inner mech |
+| MS-KILE / RFC 4120 (Kerberos) | AS-REQ → AS-REP (with `PA-ENC-TIMESTAMP` retry on `KDC_ERR_PREAUTH_REQUIRED`), TGS-REQ → TGS-REP, AP-REQ + Authenticator, GSS-API token wrap (RFC 4121 init token) |
+| RFC 4757 (RC4-HMAC ETYPE 23) | string-to-key, K1/K2/K3 derivation, encrypt + decrypt for usages 1/3/8/11 |
+| RFC 3961 / RFC 3962 (AES ETYPEs 17/18) | n-fold, DR/DK, PBKDF2-HMAC-SHA1, full `stringToKey` with `DK(tkey, "kerberos")`, AES-CTS (CS3), AES-CTS-HMAC-SHA1-96 profile with confounder + integrity check |
 | MS-RPCE (DCE-RPC) | Connection-oriented: BIND, BIND_ACK, AUTH3, REQUEST, RESPONSE, FAULT, fragmentation |
 | C706 NDR / MS-RPCE §2.2.5 NDR64 | All primitives + array variants + pointers + unions + strings |
-| MS-SMB2 | dialect 2.0.2: NEGOTIATE, SESSION_SETUP, TREE_CONNECT, CREATE, READ, WRITE, IOCTL, CLOSE |
+| MS-SMB2 | NEGOTIATE (dialects 2.0.2, 2.1, 3.0, 3.0.2, 3.1.1 with preauth-integrity + AES-CCM-128 negotiate contexts), SESSION_SETUP, TREE_CONNECT, CREATE, READ, WRITE, IOCTL, CLOSE; SMB 3.0/3.0.2 per-message AES-CMAC signing and AES-CCM-128 transparent encryption via `TRANSFORM_HEADER` |
 | MS-LSAD / MS-LSAT | `LsarOpenPolicy2`, `LsarClose`, `LsarQueryInformationPolicy` (AccountDomain), `LsarLookupSids` |
 | MS-SAMR | `SamrConnect`, `SamrConnect5`, `SamrCloseHandle`, `SamrLookupDomainInSamServer`, `SamrEnumerateDomainsInSamServer`, `SamrOpenDomain`, `SamrEnumerateUsersInDomain` |
 | MS-RAA | All five opnums (FreeContext, InitializeContextFromSid, AccessCheck, GetInformationFromContext) |
