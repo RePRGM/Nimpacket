@@ -1,0 +1,8 @@
+build/
+docs/
+nimcache/
+*.exe
+*.dll
+*.so
+*.dylib
+.DS_Store
