@@ -36,6 +36,7 @@ import unit/auth/kerberos/tapreq
 import unit/auth/kerberos/ttgsreq
 import unit/auth/kerberos/ttcp
 import unit/auth/kerberos/tgsswrap
+import unit/auth/kerberos/twrapex
 import unit/auth/spnego/tkerberos_wrap
 import unit/auth/spnego/tkerberos_signseal
 

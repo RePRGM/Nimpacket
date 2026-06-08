@@ -70,18 +70,51 @@ suite "SPNEGO + Kerberos rpcSignSeal at alPktIntegrity":
     let ok = sps.rpcUnsealVerify(tampered, tampered.len, verifier)
     check not ok
 
-  test "alPktPrivacy still raises with a clear pointer to krbWrapData":
+  test "alPktPrivacy: WrapEx round-trip seals and recovers body":
+    let key = stringToKey(str("password"), str("ATHENA.MIT.EDUraeburn"),
+                          EtypeAes256, iterations = 1)
+    let kc = krb.newKerberosProvider("R", "u", "p", "kdc",
+                                     authLevel = alPktPrivacy)
+    kc.mockEstablished(key)
+    let spc = spnego.newSpnegoKerberos(kc)
+    spc.authLevel = alPktPrivacy
+    let ks = krb.newKerberosProvider("R", "u", "p", "kdc",
+                                     authLevel = alPktPrivacy,
+                                     role = krAcceptor)
+    ks.mockEstablished(key)
+    let sps = spnego.newSpnegoKerberos(ks)
+    sps.authLevel = alPktPrivacy
+
+    let plain = str("encrypted RPC body bytes!!!")
+    var body = plain                    # plain copy we'll send sealed
+    let verifier = spc.rpcSignSeal(body, body.len)
+    check verifier.len == 60            # WrapEx Header(32) + Trailer(28)
+    check body != plain                 # actually encrypted
+
+    let ok = sps.rpcUnsealVerify(body, body.len, verifier)
+    check ok
+    check body == plain                 # decrypted back
+
+  test "alPktPrivacy: tampering with the sealed body fails":
     let key = stringToKey(str("password"), str("salt"),
                           EtypeAes128, iterations = 50)
     let kc = krb.newKerberosProvider("R", "u", "p", "kdc",
                                      authLevel = alPktPrivacy)
     kc.mockEstablished(key)
-    let sp = spnego.newSpnegoKerberos(kc)
-    sp.authLevel = alPktPrivacy
+    let spc = spnego.newSpnegoKerberos(kc)
+    spc.authLevel = alPktPrivacy
+    let ks = krb.newKerberosProvider("R", "u", "p", "kdc",
+                                     authLevel = alPktPrivacy,
+                                     role = krAcceptor)
+    ks.mockEstablished(key)
+    let sps = spnego.newSpnegoKerberos(ks)
+    sps.authLevel = alPktPrivacy
 
-    var body = str("encrypt me")
-    expect CatchableError:
-      discard sp.rpcSignSeal(body, body.len)
+    var body = str("seal me")
+    let verifier = spc.rpcSignSeal(body, body.len)
+    body[3] = body[3] xor 0x01          # corrupt the ciphertext
+    let ok = sps.rpcUnsealVerify(body, body.len, verifier)
+    check not ok
 
 suite "KerberosProvider per-message GSS Wrap / MIC":
   test "krbWrapData/krbUnwrapData round-trip with sequence number bump":

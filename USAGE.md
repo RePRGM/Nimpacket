@@ -228,13 +228,19 @@ let spnego = newSpnegoKerberos(krb)
   produces an RFC 4121 MIC token (TokenHeader + HMAC-SHA1-96, 28 bytes)
   and `rpcUnsealVerify` validates it including the sequence-number
   check.
-* `alPktPrivacy` raises with a clear message pointing you at
-  `krbWrapData` / `krbUnwrapData` on the underlying `KerberosProvider`.
-  Those expose RFC 4121 GSS_Wrap directly (full encryption + integrity)
-  and round-trip cleanly between peers. The piece pending is the
-  MS-RPCE WrapEx layout adapter that places the wrap token's cleartext
-  header inside the RPC sec_trailer with the right EC/RRC values —
-  needs validation against a real Microsoft target.
+* `alPktPrivacy` also works through SPNEGO via MS-KILE GSS_WrapEx
+  (MS-KILE §3.4.5.4.1): the RPC body is encrypted in place via
+  AES-CTS-HMAC-SHA1-96 (same-length transform), and the 60-byte
+  verifier (Header 32 + Trailer 28) goes into the
+  `sec_trailer.auth_value`. Tampering with either the encrypted body,
+  the cleartext token header, or the HMAC tag triggers a verification
+  failure. Wire compatibility with Microsoft's actual MS-RPCE
+  implementation still needs a packet-capture diff to confirm — the
+  bytes match the spec but no real-world AS-REP/TGS-REP/RPC-call
+  trace has been replayed against this code yet.
+* RFC 4121 plain GSS_Wrap/Unwrap (single-blob variant, for use outside
+  the MS-RPC framing) is also available as `krbWrapData` /
+  `krbUnwrapData` on the underlying `KerberosProvider`.
 
 ---
 

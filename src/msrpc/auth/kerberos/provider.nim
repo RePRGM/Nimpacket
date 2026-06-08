@@ -14,7 +14,7 @@
 import std/[net, times, strutils]
 import ../../rpc/auth as rpcauth
 import messages, preauth, rc4 as krbRc4, etype
-import asrep, apreq, tgsreq, gsswrap
+import asrep, apreq, tgsreq, gsswrap, wrapex
 
 when defined(posix):
   from std/posix import nil   # qualified access only — avoid AF_INET clash
@@ -83,7 +83,8 @@ proc newKerberosProvider*(realm, username, password, kdcHost: string;
   result.state = asInit
   result.authType = atKerberos
   result.authLevel = authLevel
-  result.maxSigSize = 16
+  # 60 = max of the WrapEx verifier (60) and the MIC token (28).
+  result.maxSigSize = 60
 
 # --- KDC transport ------------------------------------------------
 
@@ -391,6 +392,35 @@ proc krbVerifyMic*(p: KerberosProvider; message, mic: openArray[byte]): bool =
     raise newException(KrbProtocolError,
       "krbVerifyMic called before initialize()")
   let (gotSeq, ok) = gssVerifyMic(p.svcSessionKey, message, mic,
+                                    isInitiator = (p.role == krInitiator))
+  if not ok or gotSeq != p.rcvSeq:
+    return false
+  inc p.rcvSeq
+  true
+
+# --- MS-RPC GSS_WrapEx hooks (MS-KILE §3.4.5.4.1) -----------------
+
+proc krbWrapExSeal*(p: KerberosProvider; data: var openArray[byte];
+                    sealLen: int): seq[byte] =
+  ## Encrypt ``data[0 ..< sealLen]`` in place using MS-KILE WrapEx and
+  ## return the 60-byte verifier for the RPC sec_trailer.auth_value.
+  if p.svcSessionKey.len == 0:
+    raise newException(KrbProtocolError,
+      "krbWrapExSeal called before initialize()")
+  let verifier = wrapExEncrypt(p.svcSessionKey, data, sealLen, p.sndSeq,
+                                isInitiator = (p.role == krInitiator))
+  inc p.sndSeq
+  result = newSeq[byte](WrapExVerifierLen)
+  for i in 0 ..< WrapExVerifierLen: result[i] = verifier[i]
+
+proc krbWrapExUnseal*(p: KerberosProvider; data: var openArray[byte];
+                      sealLen: int; verifier: openArray[byte]): bool =
+  ## Decrypt ``data[0 ..< sealLen]`` in place and verify integrity.
+  if p.svcSessionKey.len == 0:
+    raise newException(KrbProtocolError,
+      "krbWrapExUnseal called before initialize()")
+  let (gotSeq, ok) = wrapExDecrypt(p.svcSessionKey, data, sealLen,
+                                    verifier,
                                     isInitiator = (p.role == krInitiator))
   if not ok or gotSeq != p.rcvSeq:
     return false

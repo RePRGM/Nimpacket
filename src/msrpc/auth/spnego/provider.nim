@@ -184,9 +184,7 @@ proc rpcSignSeal*(p: SpnegoProvider; data: var openArray[byte];
     of alPktIntegrity:
       result = krbGetMic(krb, data.toOpenArray(0, sealLen - 1))
     of alPktPrivacy:
-      raise newException(CatchableError,
-        "Kerberos alPktPrivacy needs MS-RPCE WrapEx framing — use " &
-        "krbWrapData/krbUnwrapData on the KerberosProvider directly")
+      result = krbWrapExSeal(krb, data, sealLen)
     else:
       result = @[]
 
@@ -201,7 +199,6 @@ proc rpcUnsealVerify*(p: SpnegoProvider; data: var openArray[byte];
     of alPktIntegrity:
       result = krbVerifyMic(krb, data.toOpenArray(0, sealLen - 1), verifier)
     of alPktPrivacy:
-      raise newException(CatchableError,
-        "Kerberos alPktPrivacy unwrap pending — see rpcSignSeal note")
+      result = krbWrapExUnseal(krb, data, sealLen, verifier)
     else:
       result = true
