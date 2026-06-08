@@ -60,11 +60,14 @@ proc writeHeader*(b: Buffer; h: Smb2Header) =
 
 proc readHeader*(b: Buffer): Smb2Header =
   let sig = b.readBytes(4)
-  doAssert sig == @SmbSignature, "not an SMB2 packet"
+  if sig != @SmbSignature:
+    raise newException(ValueError, "not an SMB2 packet")
   discard b.readU16LE()             # StructureSize
   result.creditCharge = b.readU16LE()
   result.status = b.readU32LE()
-  result.command = Smb2Command(b.readU16LE())
+  let cmd = b.readU16LE()
+  # Allow unknown commands through; some servers extend the enum.
+  result.command = Smb2Command(cmd)
   result.creditsRequested = b.readU16LE()
   result.flags = b.readU32LE()
   result.nextCommand = b.readU32LE()

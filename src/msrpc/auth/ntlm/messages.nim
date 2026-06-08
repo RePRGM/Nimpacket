@@ -113,6 +113,10 @@ proc parseAvPairs*(data: openArray[byte]): seq[AvPair] =
     let l  = b.readU16LE()
     if id == uint16(ord(MsvAvEOL)) and l == 0: break
     let bytes = b.readBytes(int(l))
+    # Unknown AvId — store as MsvAvEOL with the bytes, callers can
+    # filter. Better than crashing on truncated/garbage input.
+    if int(id) > ord(AvId.high):
+      continue
     result.add AvPair(id: AvId(id), value: bytes)
 
 # --- common Fields triple ------------------------------------------------

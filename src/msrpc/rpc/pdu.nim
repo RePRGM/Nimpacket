@@ -99,7 +99,10 @@ proc writeHeader*(b: Buffer; h: PduHeader) =
 proc readHeader*(b: Buffer): PduHeader =
   result.rpcVersion = b.readByte()
   result.rpcMinor   = b.readByte()
-  result.pType      = PduType(b.readByte())
+  let pt = b.readByte()
+  if int(pt) > ord(PduType.high):
+    raise newException(ValueError, "unknown PDU type: " & $pt)
+  result.pType      = PduType(pt)
   result.flags      = flagsFromByte(b.readByte())
   for i in 0 ..< 4: result.dataRep[i] = b.readByte()
   result.fragLen = b.readU16LE()

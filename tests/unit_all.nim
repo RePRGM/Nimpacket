@@ -19,6 +19,14 @@ import unit/crypto/tmd5
 import unit/crypto/thmac
 import unit/crypto/trc4
 import unit/crypto/trand
+import unit/crypto/tsha
+import unit/crypto/taes
+import unit/crypto/taes_cmac
+import unit/crypto/taes_ccm
+import unit/crypto/tkdf
+
+import unit/auth/kerberos/tetype
+import unit/auth/kerberos/tmessages
 
 import unit/auth/tprovider
 
@@ -42,6 +50,7 @@ import unit/proto/scmr/tidl
 import unit/proto/srvs/tidl
 
 import unit/smb/theader
+import unit/smb/tsmb3
 
 import unit/idlgen/tparser
 import unit/idlgen/temitter

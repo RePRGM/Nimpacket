@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.3.0 — 2026-06-08
+
+**Crypto foundation:**
+- SHA-1 + HMAC-SHA-1 (FIPS 180-4, RFC 2202 vectors pass)
+- SHA-256 + HMAC-SHA-256 (FIPS 180-4, RFC 4231 vectors pass)
+- AES-128 + AES-256 core (FIPS 197 Appendix B/C vectors pass)
+- AES-CMAC (RFC 4493 §4 vectors pass — empty / 16 / 40 / 64 byte
+  messages)
+- AES-CCM authenticated encryption (RFC 3610 Packet Vector #1
+  passes, including round-trip + tamper detection)
+- PBKDF2-HMAC-SHA1 (RFC 6070 vectors pass)
+- SP 800-108 counter-mode KBKDF (for SMB3 session-key derivation)
+
+**SMB3 (dialect 3.0 / 3.0.2 / 3.1.1) — bytes-on-wire correct:**
+- Negotiate context layout for `PreauthIntegrity` + `Encryption`
+- SMB 3.0 key derivation (SigningKey / EncryptionKey / DecryptionKey
+  / ApplicationKey via SP 800-108 with documented labels and contexts)
+- SMB 3.1.1 key derivation (uses running pre-auth SHA-512 hash as
+  context)
+- Per-message AES-CMAC signing (replaces 2.x HMAC-SHA-256)
+- Transform-header encryption via AES-128-CCM with 11-byte nonce and
+  16-byte tag (round-trip + tamper detection in unit tests)
+
+**Kerberos foundations:**
+- KRB5 ASN.1 message structures (subset for AS-REQ + KRB-ERROR)
+- RFC 3962 string-to-key (PBKDF2-HMAC-SHA1) for ETYPEs 17/18
+- AES-CTS-HMAC-SHA1-96 encryption (RFC 3962 §5)
+- AS-REQ builder
+- KRB-ERROR parser
+- KDC UDP transport
+- `KerberosProvider` skeleton fitting the existing `AuthProvider` SPI
+  (full AS exchange + TGS-REQ + AP-REQ is staged for 0.4)
+
+**Fuzzing harness:**
+- `nimble fuzz` runs a property fuzzer across 13 decoders
+- Time-budgeted via `MSRPC_FUZZ_BUDGET_MS`, reproducible via
+  `MSRPC_FUZZ_SEED`
+- Catches `Defect`-raising paths that wouldn't surface in unit tests
+- **Found 4 real bugs on first run:**
+  - PDU header: out-of-range `PduType` cast → unrecoverable
+    `RangeDefect`. Now raises `ValueError` instead.
+  - NTLM AV_PAIRs: out-of-range `AvId` cast on garbage trailing
+    bytes. Now skips unknown pair IDs.
+  - SMB2 header: `doAssert` on bad signature → uncatchable. Now
+    raises `ValueError`.
+  - Same `AvId` issue surfaced in BIND_ACK parser path.
+
+**Test coverage:**
+- 248 tests passing across 80 suites
+- New: SHA1/256, HMAC-SHA1/256, AES-128/256, AES-CMAC, AES-CCM,
+  PBKDF2, KBKDF, SMB3 round-trip, Kerberos ETYPE + ASN.1
+
 ## 0.2.0 — 2026-06-08
 
 **Protocols added:**

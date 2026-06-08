@@ -1,7 +1,7 @@
 # Package
-version       = "0.2.0"
+version       = "0.3.0"
 author        = "msrpc-nim contributors"
-description   = "Cross-platform MS-RPC + SMB2 + NTLM + NDR + LDAP/CLDAP in pure Nim"
+description   = "Cross-platform MS-RPC + SMB2/3 + NTLM + Kerberos + NDR + LDAP/CLDAP in pure Nim"
 license       = "MIT"
 srcDir        = "src"
 installExt    = @["nim"]
@@ -26,6 +26,9 @@ task test_unit, "Unit tests only (no threading needed)":
 
 task test_live, "Live tests against a real DC (env-gated)":
   exec "nim r --hints:off -d:msrpcLive tests/live/all.nim"
+
+task fuzz, "Property fuzzer (MSRPC_FUZZ_BUDGET_MS, MSRPC_FUZZ_SEED env vars)":
+  exec "nim r --hints:off --path:src tests/fuzz/fuzz_runner.nim"
 
 task docs, "Generate API docs into docs/":
   exec "nim doc --project --outdir:docs src/msrpc.nim"

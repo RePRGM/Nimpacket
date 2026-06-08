@@ -58,7 +58,22 @@ import msrpc/proto/raa/highlevel as raa
 export raatypes, raaidl, raa
 
 import msrpc/crypto/rand
-export rand
+import msrpc/crypto/sha1
+import msrpc/crypto/sha256
+import msrpc/crypto/hmac_sha
+import msrpc/crypto/aes
+import msrpc/crypto/aes_cmac
+import msrpc/crypto/aes_ccm
+import msrpc/crypto/kdf
+export rand, sha1, sha256, hmac_sha, aes, aes_cmac, aes_ccm, kdf
+
+import msrpc/smb/smb3 as smb3
+export smb3
+
+import msrpc/auth/kerberos/etype as krb_etype
+import msrpc/auth/kerberos/messages as krb_messages
+import msrpc/auth/kerberos/provider as krb_provider
+export krb_etype, krb_messages, krb_provider
 
 import msrpc/smb/header as smbheader
 import msrpc/smb/client as smbclient
