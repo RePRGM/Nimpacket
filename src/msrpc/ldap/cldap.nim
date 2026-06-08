@@ -37,9 +37,14 @@ type
 proc waitForData(s: Socket; timeoutMs: int): bool =
   ## ``true`` if data arrived within the timeout, ``false`` on timeout.
   ## Uses std/selectors which abstracts epoll/kqueue/IOCP/select.
+  ##
+  ## Note: must pass the raw ``SocketHandle`` here, not ``int``. The
+  ## Windows ``ioselectors_select`` backend's ``registerHandle`` is
+  ## strictly typed on ``SocketHandle``; an ``int`` triggers a type
+  ## mismatch deep in the std stack.
   let sel = newSelector[int]()
   defer: sel.close()
-  sel.registerHandle(int(s.getFd()), {Event.Read}, 0)
+  sel.registerHandle(s.getFd(), {Event.Read}, 0)
   let ready = sel.select(timeoutMs)
   result = ready.len > 0
 
