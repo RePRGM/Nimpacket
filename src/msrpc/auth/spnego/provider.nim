@@ -26,28 +26,48 @@ import ../ntlm/provider as ntlm_provider
 import asn1
 
 type
+  SpnegoMech* = enum
+    smNtlm
+    smKerberos
+
   SpnegoProvider* = ref object of AuthProvider
-    inner*: NtlmProvider             ## underlying mechanism (NTLM for now)
+    inner*: AuthProvider              ## underlying mechanism (NTLM or Kerberos)
+    mech*: SpnegoMech
     sentFirstToken*: bool
 
 proc newSpnegoProvider*(inner: NtlmProvider): SpnegoProvider =
-  result = SpnegoProvider(inner: inner, sentFirstToken: false)
+  result = SpnegoProvider(inner: inner, mech: smNtlm, sentFirstToken: false)
   result.state = inner.state
   result.authType = atGssNegotiate    # 9 = SPNEGO
   result.authLevel = inner.authLevel
   result.maxSigSize = inner.maxSigSize
 
+proc newSpnegoKerberos*(inner: AuthProvider): SpnegoProvider =
+  ## Wrap a Kerberos provider for SPNEGO. The inner is typed as
+  ## AuthProvider to avoid an import cycle with the kerberos module.
+  result = SpnegoProvider(inner: inner, mech: smKerberos, sentFirstToken: false)
+  result.state = inner.state
+  result.authType = atGssNegotiate
+  result.authLevel = inner.authLevel
+  result.maxSigSize = inner.maxSigSize
+
 # --- helpers ---------------------------------------------------------
 
-proc wrapInitialToken(innerNtlm: openArray[byte]): seq[byte] =
-  ## GSS-API + SPNEGO NegTokenInit wrap of an NTLM Type-1 token.
+proc wrapInitialToken(innerTok: openArray[byte]; mech: SpnegoMech): seq[byte] =
+  ## GSS-API + SPNEGO NegTokenInit wrap of an inner mech token.
+  ## For Kerberos, innerTok is the GSS-API wrapped AP-REQ (its outer
+  ## [APP 0] tag stays in place; SPNEGO just transports the bytes).
+  let mechOid =
+    case mech
+    of smNtlm: derEncodeOid(@NtlmsspOidArcs)
+    of smKerberos: derEncodeOid(@KerberosOidArcs)
   # MechTypeList = SEQUENCE OF MechType
-  let mechList = derTLV(tagSequence, derEncodeOid(@NtlmsspOidArcs))
+  let mechList = derTLV(tagSequence, mechOid)
   # [0] mechTypes
   let mechTypesTagged = derTLV(ctxConstructed(0), mechList)
   # [2] mechToken
   let mechTokenTagged = derTLV(ctxConstructed(2),
-                                derTLV(tagOctetString, innerNtlm))
+                                derTLV(tagOctetString, innerTok))
   # NegTokenInit body = SEQUENCE { mechTypes, mechToken }
   let initBody = newBuffer()
   initBody.writeBytes(mechTypesTagged)
@@ -113,13 +133,18 @@ method initialize*(p: SpnegoProvider; targetSpn: string): seq[byte] =
   let inner = p.inner.initialize(targetSpn)
   p.state = p.inner.state
   p.sentFirstToken = true
-  result = wrapInitialToken(inner)
+  result = wrapInitialToken(inner, p.mech)
 
 method step*(p: SpnegoProvider; serverToken: openArray[byte]): seq[byte] =
   let challenge = unwrapChallengeToken(serverToken)
   let response = p.inner.step(challenge)
   p.state = p.inner.state
-  result = wrapResponseToken(response)
+  # Kerberos returns empty after AP-REQ (no follow-up token); only wrap
+  # if there's actually something to send.
+  if response.len == 0:
+    result = @[]
+  else:
+    result = wrapResponseToken(response)
 
 # Sign/seal/verify/unseal pass through to the inner provider — SPNEGO
 # only affects the token exchange, not per-message protection.
@@ -139,8 +164,16 @@ method unseal*(p: SpnegoProvider; pdu: var openArray[byte];
 
 proc rpcSignSeal*(p: SpnegoProvider; data: var openArray[byte];
                   sealLen: int): seq[byte] =
-  p.inner.rpcSignSeal(data, sealLen)
+  case p.mech
+  of smNtlm: NtlmProvider(p.inner).rpcSignSeal(data, sealLen)
+  of smKerberos:
+    raise newException(CatchableError,
+      "Kerberos rpcSignSeal not yet implemented (RFC 4121 wrap pending)")
 
 proc rpcUnsealVerify*(p: SpnegoProvider; data: var openArray[byte];
                       sealLen: int; verifier: openArray[byte]): bool =
-  p.inner.rpcUnsealVerify(data, sealLen, verifier)
+  case p.mech
+  of smNtlm: NtlmProvider(p.inner).rpcUnsealVerify(data, sealLen, verifier)
+  of smKerberos:
+    raise newException(CatchableError,
+      "Kerberos rpcUnsealVerify not yet implemented (RFC 4121 wrap pending)")

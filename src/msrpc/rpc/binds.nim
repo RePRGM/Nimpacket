@@ -192,7 +192,11 @@ proc parseBindAckBody*(b: Buffer): BindAckPdu =
   discard b.readU16LE()
   for i in 0 ..< n:
     var r: PContextResultEntry
-    r.result = PContextResult(b.readU16LE())
+    let kindRaw = b.readU16LE()
+    if int(kindRaw) > ord(PContextResult.high):
+      raise newException(ValueError,
+        "unknown PContextResult kind: " & $kindRaw)
+    r.result = PContextResult(kindRaw)
     r.reason = b.readU16LE()
     r.transferSyntax = b.readSyntax()
     result.results.add r

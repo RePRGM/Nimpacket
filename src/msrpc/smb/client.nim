@@ -13,7 +13,9 @@
 import std/[net, strutils]
 import ../common/[buffers, endian, guid, unicode]
 import ../auth/ntlm/provider
+import ../crypto/rand
 import header
+import smb3
 
 type
   SmbError* = object of CatchableError
@@ -26,6 +28,14 @@ type
     serverGuid*: Uuid
     serverChallenge*: array[8, byte]
     provider*: NtlmProvider
+    dialect*: uint16              ## negotiated dialect (Smb202..Smb311)
+    cipher*: uint16               ## negotiated cipher (0 if no encryption)
+    signingKey*: seq[byte]        ## derived once SESSION_SETUP completes
+    encryptKey*: seq[byte]
+    decryptKey*: seq[byte]
+    appKey*: seq[byte]
+    signingActive*: bool          ## flip on after SESSION_SETUP succeeds
+    encryptionActive*: bool       ## flip on if server requests it
 
   SmbPipe* = ref object
     session*: SmbSession
@@ -33,17 +43,38 @@ type
 
 # --- transport framing ---------------------------------------------------
 
+proc maybeSignOrEncrypt*(s: SmbSession; payload: openArray[byte]): seq[byte] =
+  ## Apply SMB 3.x per-message protection. Encryption wins if both are
+  ## requested (encryption replaces signing under the transform header).
+  if s.encryptionActive and s.encryptKey.len > 0:
+    var nonce: array[11, byte]
+    randomBytes(nonce)
+    let (th, ct) = encryptPdu(s.encryptKey, payload, nonce, s.sessionId)
+    result = newSeq[byte](th.len + ct.len)
+    for i in 0 ..< th.len: result[i] = th[i]
+    for i in 0 ..< ct.len: result[th.len + i] = ct[i]
+  elif s.signingActive and s.signingKey.len > 0:
+    var pkt = @payload
+    pkt[16] = pkt[16] or 0x08                  # SMB2_FLAGS_SIGNED
+    for i in 48 ..< 64: pkt[i] = 0             # zero signature first
+    let sig = signMessage(s.signingKey, pkt)
+    for i in 0 ..< 16: pkt[48 + i] = sig[i]
+    result = pkt
+  else:
+    result = @payload
+
 proc sendFrame(s: SmbSession; payload: openArray[byte]) =
   doAssert payload.len < 0x100_0000, "SMB frame too large"
+  let outBytes = maybeSignOrEncrypt(s, payload)
   var hdr: array[4, byte]
   hdr[0] = 0
-  hdr[1] = byte((payload.len shr 16) and 0xff)
-  hdr[2] = byte((payload.len shr 8) and 0xff)
-  hdr[3] = byte(payload.len and 0xff)
-  var packet = newString(4 + payload.len)
+  hdr[1] = byte((outBytes.len shr 16) and 0xff)
+  hdr[2] = byte((outBytes.len shr 8) and 0xff)
+  hdr[3] = byte(outBytes.len and 0xff)
+  var packet = newString(4 + outBytes.len)
   packet[0] = char(hdr[0]); packet[1] = char(hdr[1])
   packet[2] = char(hdr[2]); packet[3] = char(hdr[3])
-  for i, b in payload: packet[4 + i] = char(b)
+  for i, b in outBytes: packet[4 + i] = char(b)
   s.sock.send(packet)
 
 proc recvFrame(s: SmbSession): seq[byte] =
@@ -54,15 +85,28 @@ proc recvFrame(s: SmbSession): seq[byte] =
     (int(byte(lenBuf[1])) shl 16) or
     (int(byte(lenBuf[2])) shl 8) or
     int(byte(lenBuf[3]))
-  result = newSeq[byte](n)
+  var raw = newSeq[byte](n)
   var got = 0
   while got < n:
     var buf = newString(n - got)
     let m = s.sock.recv(buf, n - got)
     if m <= 0:
       raise newException(SmbError, "short read on SMB frame body")
-    for i in 0 ..< m: result[got + i] = byte(buf[i].ord)
+    for i in 0 ..< m: raw[got + i] = byte(buf[i].ord)
     got += m
+  # If it's a transform header (encrypted PDU) and we have a decrypt key,
+  # decrypt in place. Otherwise return raw bytes.
+  if n >= TransformHeaderLen and raw[0] == 0xFD'u8 and
+     raw[1] == byte('S') and raw[2] == byte('M') and raw[3] == byte('B') and
+     s.decryptKey.len > 0:
+    let th = raw[0 ..< TransformHeaderLen]
+    let ct = raw[TransformHeaderLen ..< raw.len]
+    let (pt, ok) = decryptPdu(s.decryptKey, th, ct)
+    if not ok:
+      raise newException(SmbError, "SMB3 transform decrypt/verify failed")
+    result = pt
+  else:
+    result = raw
 
 # --- message helpers ----------------------------------------------------
 
@@ -78,17 +122,49 @@ proc newHeader(s: SmbSession; cmd: Smb2Command): Smb2Header =
 
 # --- NEGOTIATE (§2.2.3, §2.2.4) ---------------------------------------
 
-proc negotiate(s: SmbSession) =
+proc buildNegotiateBody*(dialects: openArray[uint16]): seq[byte] =
+  ## Construct the NEGOTIATE request body (without the SMB2 header).
+  ## When ``Smb311`` is offered the body includes preauth-integrity and
+  ## encryption negotiate contexts at the correct 8-byte aligned offset.
+  doAssert dialects.len >= 1 and dialects.len <= 8
+  let offer311 = Smb311 in dialects
+  let dialectsBytes = 2 * dialects.len
+  let prefixLen = 36 + dialectsBytes
+  let prefixPadded = (prefixLen + 7) and not 7
+  let ctxStartFromHeader = uint32(64 + prefixPadded)
+
   let body = newBuffer()
-  body.writeU16LE(36)                       # StructureSize
-  body.writeU16LE(1)                        # DialectCount
-  body.writeU16LE(0)                        # SecurityMode
-  body.writeU16LE(0)                        # Reserved
-  body.writeU32LE(0)                        # Capabilities
-  for _ in 0 ..< 16: body.writeByte(0)      # ClientGuid (zeros for v1 of this code)
-  body.writeU64LE(0)                        # ClientStartTime
-  body.writeU16LE(0x0202)                   # Dialect SMB 2.0.2
-  body.writeU16LE(0)                        # padding
+  body.writeU16LE(36)                                  # StructureSize
+  body.writeU16LE(uint16(dialects.len))                # DialectCount
+  body.writeU16LE(0x0001)                              # SecurityMode: signing enabled
+  body.writeU16LE(0)                                   # Reserved
+  var caps: uint32 = 0x04                              # LARGE_MTU
+  if offer311 or Smb300 in dialects or Smb302 in dialects:
+    caps = caps or 0x40                                # ENCRYPTION capable
+  body.writeU32LE(caps)
+  for _ in 0 ..< 16: body.writeByte(0)                 # ClientGuid
+  if offer311:
+    body.writeU32LE(ctxStartFromHeader)                # NegotiateContextOffset
+    body.writeU16LE(2'u16)                             # NegotiateContextCount
+    body.writeU16LE(0)                                 # Reserved2
+  else:
+    body.writeU64LE(0)                                 # ClientStartTime
+  for d in dialects: body.writeU16LE(d)
+  while (body.pos and 7) != 0: body.writeByte(0)
+
+  if offer311:
+    let preauthCtx = buildPreauthIntegrityContext([HashSha512],
+                                                   newSeq[byte](32))
+    body.writeNegotiateContext(CtxPreauthIntegrity, preauthCtx)
+    let encCtx = buildEncryptionContext([AesCcm128])
+    body.writeNegotiateContext(CtxEncryption, encCtx)
+  result = body.consumed
+
+proc negotiate(s: SmbSession; dialects: openArray[uint16]) =
+  ## Send NEGOTIATE offering ``dialects`` and capture the negotiated
+  ## dialect + cipher.
+  let body = newBuffer()
+  body.writeBytes(buildNegotiateBody(dialects))
 
   let hdrBuf = newBuffer()
   hdrBuf.writeHeader(s.newHeader(cmdNegotiate))
@@ -102,8 +178,8 @@ proc negotiate(s: SmbSession) =
     raise newException(SmbError, "NEGOTIATE failed: 0x" & toHex(int64(respHdr.status), 8))
   discard rb.readU16LE()                    # StructureSize
   discard rb.readU16LE()                    # SecurityMode
-  discard rb.readU16LE()                    # DialectRevision
-  discard rb.readU16LE()                    # Reserved
+  s.dialect = rb.readU16LE()                # DialectRevision
+  let ctxCount = rb.readU16LE()             # NegotiateContextCount (3.1.1 only)
   s.serverGuid = guid.readWire(rb)
   discard rb.readU32LE()                    # Capabilities
   discard rb.readU32LE()                    # MaxTransactSize
@@ -111,8 +187,28 @@ proc negotiate(s: SmbSession) =
   discard rb.readU32LE()                    # MaxWriteSize
   discard rb.readU64LE()                    # SystemTime
   discard rb.readU64LE()                    # ServerStartTime
-  # The server's SecurityBuffer (the initial SPNEGO/NTLM token) follows
-  # but we ignore it here — we'll send our own Type-1 NEGOTIATE.
+  let secOff = rb.readU16LE()
+  let secLen = rb.readU16LE()
+  let ctxOff = rb.readU32LE()
+  # Skip server security blob — we send our own NTLM Type-1 next.
+  discard secOff; discard secLen
+
+  # If we negotiated 3.1.1 read the encryption context to learn the
+  # chosen cipher. Anything else: default to AES-CCM-128 if the server
+  # offered encryption capability.
+  if s.dialect == Smb311 and ctxCount > 0 and ctxOff > 0:
+    rb.seek(int(ctxOff))
+    for _ in 0 ..< int(ctxCount):
+      let cType = rb.readU16LE()
+      let cLen = rb.readU16LE()
+      discard rb.readU32LE()                # Reserved
+      let dataEnd = rb.pos + int(cLen)
+      if cType == CtxEncryption:
+        let cipherCount = rb.readU16LE()
+        if cipherCount >= 1:
+          s.cipher = rb.readU16LE()
+      rb.seek(dataEnd)
+      while (rb.pos and 7) != 0 and rb.pos < rb.len: rb.skip(1)
 
 # --- SESSION_SETUP (§2.2.5, §2.2.6) -----------------------------------
 
@@ -164,6 +260,12 @@ proc sessionSetup(s: SmbSession; targetSpn: string) =
   let respHdr2 = rb2.readHeader()
   if respHdr2.status != 0:
     raise newException(SmbError, "SESSION_SETUP step2 failed: 0x" & $respHdr2.status)
+  # Read SessionFlags from the response body to learn if the server wants
+  # this session encrypted (SMB2_SESSION_FLAG_ENCRYPT_DATA = 0x0004).
+  discard rb2.readU16LE()                # StructureSize
+  let sessionFlags = rb2.readU16LE()
+  if (sessionFlags and 0x0004'u16) != 0:
+    s.encryptionActive = true
 
 # --- TREE_CONNECT (§2.2.9, §2.2.10) -----------------------------------
 
@@ -192,14 +294,30 @@ proc treeConnect(s: SmbSession; host: string) =
 # --- public connect / openPipe / read / write / close -----------------
 
 proc newSmbSession*(host: string; port = 445; provider: NtlmProvider;
-                    targetSpn = ""): SmbSession =
+                    targetSpn = "";
+                    dialects: openArray[uint16] = [Smb202, Smb210,
+                                                   Smb300, Smb302]):
+                    SmbSession =
+  ## Dialects are sent in offer order; the server picks the highest it
+  ## supports. Default omits 3.1.1 because the running preauth-hash
+  ## state machine isn't wired through yet — pass an explicit list
+  ## containing `Smb311` to opt in.
   result = SmbSession(provider: provider, messageId: 0,
                        treeId: 0, sessionId: 0)
   result.sock = newSocket(buffered = false)
   result.sock.connect(host, Port(port))
   let spn = if targetSpn.len > 0: targetSpn else: "cifs/" & host
-  result.negotiate()
+  result.negotiate(dialects)
   result.sessionSetup(spn)
+  # Derive SMB 3.0/3.0.2 session keys. 3.1.1 needs the preauth hash
+  # which we'd thread through negotiate+session-setup separately.
+  if result.dialect in [Smb300, Smb302]:
+    let keys = derive30Keys(provider.exportedSessionKey)
+    result.signingKey = keys.signing
+    result.encryptKey = keys.encrypt
+    result.decryptKey = keys.decrypt
+    result.appKey = keys.appKey
+    result.signingActive = true
   result.treeConnect(host)
 
 proc openPipe*(s: SmbSession; name: string): SmbPipe =

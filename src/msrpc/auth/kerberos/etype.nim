@@ -13,6 +13,7 @@
 ## blocks; for inputs ≤ 16 bytes a single AES block is used.
 
 import ../../crypto/[aes, hmac_sha, kdf]
+import nfold
 
 const
   EtypeAes128*  = 17'u32
@@ -48,74 +49,151 @@ proc aesCbcEncryptBlocks(key: openArray[byte]; iv: array[16, byte];
 # --- CTS encryption (RFC 3962 §5) ---------------------------------
 
 proc aesCtsEncrypt*(key, plaintext: openArray[byte]): seq[byte] =
-  ## RFC 3962 §5 ciphertext-stealing mode. Returns ciphertext of the
-  ## same length as plaintext. IV is implicitly all-zeros (Kerberos
-  ## convention: the caller has already mixed-in any IV via the
-  ## confounder prepended to plaintext).
+  ## RFC 3962 §5 ciphertext-stealing mode (CS3 variant): zero-pad
+  ## plaintext to a 16-byte multiple, do standard CBC with zero IV,
+  ## swap the last two ciphertext blocks, then truncate the result back
+  ## to the original plaintext length.
   doAssert plaintext.len >= 16, "AES-CTS needs ≥ 16 bytes of input"
   let zeroIv: array[16, byte] = [0'u8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
   if plaintext.len == 16:
     return aesCbcEncryptBlocks(key, zeroIv, plaintext)
 
-  # Common output buffer for the multi-block cases below.
-  # (Declared after the single-block fast path so we don't allocate.)
-
+  # Zero-pad to 16-byte multiple.
   let n = plaintext.len
-  let lastLen = n mod 16
-  let body =
-    if lastLen == 0: n - 32   # all-but-last-two-blocks for full alignment
-    else: n - 16 - lastLen
-  # All complete blocks before the last two (or one) get standard CBC.
-  var ct = newSeq[byte](n)
-  var iv = zeroIv
-  if body > 0:
-    let chunk = aesCbcEncryptBlocks(key, iv, plaintext[0 ..< body])
-    for i in 0 ..< body: ct[i] = chunk[i]
-    for i in 0 ..< 16: iv[i] = chunk[body - 16 + i]
+  let padded = ((n + 15) div 16) * 16
+  var ptPadded = newSeq[byte](padded)
+  for i in 0 ..< n: ptPadded[i] = plaintext[i]
+  let ct = aesCbcEncryptBlocks(key, zeroIv, ptPadded)
+  # Swap last two 16-byte ciphertext blocks.
+  var swapped = newSeq[byte](padded)
+  for i in 0 ..< padded - 32: swapped[i] = ct[i]
+  for i in 0 ..< 16: swapped[padded - 32 + i] = ct[padded - 16 + i]
+  for i in 0 ..< 16: swapped[padded - 16 + i] = ct[padded - 32 + i]
+  # Truncate to original plaintext length.
+  result = swapped[0 ..< n]
 
-  if lastLen == 0:
-    # Exactly aligned: just swap the last two blocks (RFC 3962 §5).
-    let chunk = aesCbcEncryptBlocks(key, iv, plaintext[body ..< n])
-    # chunk has two blocks: penultimate at 0..15, last at 16..31.
-    # In the CTS output we swap them.
-    for i in 0 ..< 16: ct[body + i]     = chunk[16 + i]
-    for i in 0 ..< 16: ct[body + 16 + i] = chunk[i]
-    result = ct
-    return
+# --- AES-CTS decryption (RFC 3962 §5) -----------------------------
 
-  # General case: last full block + partial.
-  let pad = 16 - lastLen
-  var penultimate = newSeq[byte](16)
-  for i in 0 ..< 16: penultimate[i] = plaintext[body + i]
-  let cn1 = aesCbcEncryptBlocks(key, iv, penultimate)
-  # Build last partial block padded with zeros and feed through CBC.
-  var lastBlock = newSeq[byte](16)
-  for i in 0 ..< lastLen: lastBlock[i] = plaintext[body + 16 + i]
-  for i in 0 ..< pad: lastBlock[lastLen + i] = 0
-  var iv2: array[16, byte]
-  for i in 0 ..< 16: iv2[i] = cn1[i]
-  let cn = aesCbcEncryptBlocks(key, iv2, lastBlock)
-  # Per RFC 3962 §5: prior blocks || truncated Cn || Cn-1.
-  for i in 0 ..< lastLen: ct[body + i] = cn[i]
-  for i in 0 ..< 16: ct[body + lastLen + i] = cn1[i]
-  result = ct
+proc aesCbcDecryptBlocks(key: openArray[byte]; iv: array[16, byte];
+                         ciphertext: openArray[byte]): seq[byte] =
+  doAssert ciphertext.len mod 16 == 0
+  var ctx128: Aes128Ctx
+  var ctx256: Aes256Ctx
+  let is128 = key.len == 16
+  if is128: ctx128.initAes128(key) else: ctx256.initAes256(key)
+  result = newSeq[byte](ciphertext.len)
+  var prev = iv
+  var i = 0
+  while i < ciphertext.len:
+    var blk: array[16, byte]
+    for k in 0 ..< 16: blk[k] = ciphertext[i + k]
+    let dec = if is128: ctx128.decryptBlock(blk)
+              else: ctx256.decryptBlock(blk)
+    for k in 0 ..< 16: result[i + k] = dec[k] xor prev[k]
+    for k in 0 ..< 16: prev[k] = ciphertext[i + k]
+    i += 16
+
+proc decryptSingleBlock(key: openArray[byte]; blk: array[16, byte]):
+                       array[16, byte] =
+  ## AES decrypt one block with no IV mixing.
+  var ctx128: Aes128Ctx
+  var ctx256: Aes256Ctx
+  if key.len == 16:
+    ctx128.initAes128(key)
+    result = ctx128.decryptBlock(blk)
+  else:
+    ctx256.initAes256(key)
+    result = ctx256.decryptBlock(blk)
+
+proc aesCtsDecrypt*(key, ciphertext: openArray[byte]): seq[byte] =
+  ## Inverse of aesCtsEncrypt (CS3). Reconstructs the missing high
+  ## bytes of the truncated Cn-1 using the fact that the zero-padding
+  ## in encryption forced AES⁻¹(Cn)[d..15] = Cn-1[d..15].
+  doAssert ciphertext.len >= 16
+  let zeroIv: array[16, byte] = [0'u8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+  if ciphertext.len == 16:
+    return aesCbcDecryptBlocks(key, zeroIv, ciphertext)
+
+  let n = ciphertext.len
+  let lastLenRaw = n mod 16
+  let lastLen = if lastLenRaw == 0: 16 else: lastLenRaw
+  let padded = ((n + 15) div 16) * 16
+
+  # Wire layout (after CS3 swap+truncate):
+  #   wire[0 ..< padded-32]            = unchanged prior CBC blocks
+  #   wire[padded-32 ..< padded-16]    = full Cn (the natural-last CBC out)
+  #   wire[padded-16 ..< n]            = truncated Cn-1 (first lastLen bytes)
+  # We need to recover Cn-1[lastLen..15] before un-swapping.
+  var fullCt = newSeq[byte](padded)
+  for i in 0 ..< n: fullCt[i] = ciphertext[i]
+  if lastLen < 16:
+    # Need the missing bytes of Cn-1. AES⁻¹(Cn)[lastLen..15] = Cn-1[lastLen..15].
+    var cn: array[16, byte]
+    for i in 0 ..< 16: cn[i] = ciphertext[padded - 32 + i]
+    let cnDec = decryptSingleBlock(key, cn)
+    for i in lastLen ..< 16:
+      fullCt[padded - 16 + i] = cnDec[i]
+
+  # Un-swap last two ciphertext blocks back to natural CBC order.
+  var natural = newSeq[byte](padded)
+  for i in 0 ..< padded - 32: natural[i] = fullCt[i]
+  for i in 0 ..< 16: natural[padded - 32 + i] = fullCt[padded - 16 + i]
+  for i in 0 ..< 16: natural[padded - 16 + i] = fullCt[padded - 32 + i]
+  let plainPadded = aesCbcDecryptBlocks(key, zeroIv, natural)
+  result = plainPadded[0 ..< n]
+
+# --- DR / DK (RFC 3961 §5.3) --------------------------------------
+
+proc derive*(baseKey, constant: openArray[byte]): seq[byte] =
+  ## DR: produce key-length bytes by repeatedly AES-encrypting an
+  ## n-folded constant in ECB until the buffer is at least keyLen.
+  let keyLen = baseKey.len   # 16 for AES-128, 32 for AES-256
+  var blk: array[16, byte]
+  let folded =
+    if constant.len == 16: @constant
+    else: nfold(constant, 128)
+  for i in 0 ..< 16: blk[i] = folded[i]
+  var buf = newSeq[byte](0)
+  var ctx128: Aes128Ctx
+  var ctx256: Aes256Ctx
+  let is128 = keyLen == 16
+  if is128: ctx128.initAes128(baseKey) else: ctx256.initAes256(baseKey)
+  while buf.len < keyLen:
+    let enc = if is128: ctx128.encryptBlock(blk)
+              else: ctx256.encryptBlock(blk)
+    for x in enc: buf.add(x)
+    blk = enc
+  result = buf[0 ..< keyLen]
+
+proc deriveKey*(baseKey, constant: openArray[byte]): seq[byte] =
+  ## DK(K, C) = random-to-key(DR(K, C)). For AES, random-to-key is the
+  ## identity (just take the bytes).
+  result = derive(baseKey, constant)
+
+proc usageConstant*(usage: uint32; selector: byte): array[5, byte] =
+  ## Build the 5-byte constant `BE(usage) || selector` per RFC 3961 §5.3.
+  ## Selector is 0xAA for Ke, 0x55 for Ki, 0x99 for Kc.
+  result[0] = byte((usage shr 24) and 0xff)
+  result[1] = byte((usage shr 16) and 0xff)
+  result[2] = byte((usage shr 8) and 0xff)
+  result[3] = byte(usage and 0xff)
+  result[4] = selector
 
 # --- string-to-key (RFC 3962 §4) ----------------------------------
 
+const KerberosLabel = "kerberos"
+
 proc stringToKey*(password, salt: openArray[byte]; etype: uint32;
                   iterations: int = 4096): seq[byte] =
-  ## RFC 3962 §4. Produces a 16-byte key for ETYPE=17 or a 32-byte key
-  ## for ETYPE=18. We skip the DK / DR steps (those are for derived
-  ## subkey usages); ``stringToKey`` returns the base key.
+  ## RFC 3962 §4. Full pipeline: PBKDF2 → tkey → base = DK(tkey, "kerberos").
   let dkLen = if etype == EtypeAes128: Aes128KeyLen
               elif etype == EtypeAes256: Aes256KeyLen
               else: 0
   doAssert dkLen > 0, "unsupported Kerberos etype: " & $etype
   let tkey = pbkdf2HmacSha1(password, salt, iterations, dkLen)
-  # Per RFC 3962, the final base key is DK(tkey, "kerberos") — we
-  # leave the DK step out for v0 (most KDCs accept tkey directly for
-  # the AS-REQ pre-auth path). Full DK is a follow-up.
-  result = tkey
+  var label = newSeq[byte](KerberosLabel.len)
+  for i, c in KerberosLabel: label[i] = byte(c)
+  result = deriveKey(tkey, label)
 
 # --- HMAC truncated to 96 bits ------------------------------------
 
