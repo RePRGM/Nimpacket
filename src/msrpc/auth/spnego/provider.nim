@@ -23,6 +23,7 @@
 import ../../common/buffers
 import ../../rpc/auth as rpcauth
 import ../ntlm/provider as ntlm_provider
+import ../kerberos/provider as krb_provider
 import asn1
 
 type
@@ -164,16 +165,43 @@ method unseal*(p: SpnegoProvider; pdu: var openArray[byte];
 
 proc rpcSignSeal*(p: SpnegoProvider; data: var openArray[byte];
                   sealLen: int): seq[byte] =
+  ## Per-message sign+seal.
+  ##  - NTLM: RC4 seal data[0..sealLen-1] in place, return 16-byte sig.
+  ##  - Kerberos at alPktIntegrity: compute an RFC 4121 MIC over the
+  ##    same byte range; data stays in cleartext, verifier carries
+  ##    the MIC token (TokenHeader(16) || HMAC(12) = 28 bytes).
+  ##  - Kerberos at alPktPrivacy: would require the MS-RPCE WrapEx
+  ##    layout (cleartext header offset + EC + RRC fields) that hasn't
+  ##    been validated against a real Microsoft target. Use
+  ##    ``krbWrapData`` on the inner KerberosProvider for GSS Wrap
+  ##    directly without the RPC framing in the meantime.
   case p.mech
-  of smNtlm: NtlmProvider(p.inner).rpcSignSeal(data, sealLen)
+  of smNtlm:
+    result = NtlmProvider(p.inner).rpcSignSeal(data, sealLen)
   of smKerberos:
-    raise newException(CatchableError,
-      "Kerberos rpcSignSeal not yet implemented (RFC 4121 wrap pending)")
+    let krb = KerberosProvider(p.inner)
+    case p.authLevel
+    of alPktIntegrity:
+      result = krbGetMic(krb, data.toOpenArray(0, sealLen - 1))
+    of alPktPrivacy:
+      raise newException(CatchableError,
+        "Kerberos alPktPrivacy needs MS-RPCE WrapEx framing — use " &
+        "krbWrapData/krbUnwrapData on the KerberosProvider directly")
+    else:
+      result = @[]
 
 proc rpcUnsealVerify*(p: SpnegoProvider; data: var openArray[byte];
                       sealLen: int; verifier: openArray[byte]): bool =
   case p.mech
-  of smNtlm: NtlmProvider(p.inner).rpcUnsealVerify(data, sealLen, verifier)
+  of smNtlm:
+    result = NtlmProvider(p.inner).rpcUnsealVerify(data, sealLen, verifier)
   of smKerberos:
-    raise newException(CatchableError,
-      "Kerberos rpcUnsealVerify not yet implemented (RFC 4121 wrap pending)")
+    let krb = KerberosProvider(p.inner)
+    case p.authLevel
+    of alPktIntegrity:
+      result = krbVerifyMic(krb, data.toOpenArray(0, sealLen - 1), verifier)
+    of alPktPrivacy:
+      raise newException(CatchableError,
+        "Kerberos alPktPrivacy unwrap pending — see rpcSignSeal note")
+    else:
+      result = true

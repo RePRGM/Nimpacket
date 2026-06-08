@@ -206,9 +206,13 @@ let krb = newKerberosProvider(
   password = "P@ssw0rd!",
   kdcHost = "dc01.corp.local",
   preferEtype = EtypeAes256,        # or krbRc4.EtypeRc4Hmac
-  transport = ktAuto)               # ktTcp / ktUdp / ktAuto (default)
+  transport = ktAuto,               # ktTcp / ktUdp / ktAuto (default)
+  role = krInitiator)               # krAcceptor on the server peer
 let spnego = newSpnegoKerberos(krb)
-# spnego can now be passed wherever an AuthProvider is expected
+# spnego can now be passed wherever an AuthProvider is expected.
+# For direct GSS-Wrap (sealed) without the RPC framing:
+#   let token = krb.krbWrapData(@plaintextBytes)
+#   let (recovered, ok) = peer.krbUnwrapData(token)
 ```
 
 **Decision tree:**
@@ -218,6 +222,19 @@ let spnego = newSpnegoKerberos(krb)
 * Domain integration test? Need to validate AD-side audit logging shows
   Kerberos auth? Forced AES-only environment? → **Kerberos** (wrap in
   SPNEGO for SMB).
+
+**Per-message protection state (Kerberos):**
+* `alPktIntegrity` works end-to-end through SPNEGO: `rpcSignSeal`
+  produces an RFC 4121 MIC token (TokenHeader + HMAC-SHA1-96, 28 bytes)
+  and `rpcUnsealVerify` validates it including the sequence-number
+  check.
+* `alPktPrivacy` raises with a clear message pointing you at
+  `krbWrapData` / `krbUnwrapData` on the underlying `KerberosProvider`.
+  Those expose RFC 4121 GSS_Wrap directly (full encryption + integrity)
+  and round-trip cleanly between peers. The piece pending is the
+  MS-RPCE WrapEx layout adapter that places the wrap token's cleartext
+  header inside the RPC sec_trailer with the right EC/RRC values —
+  needs validation against a real Microsoft target.
 
 ---
 

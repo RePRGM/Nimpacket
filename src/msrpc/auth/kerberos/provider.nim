@@ -14,12 +14,22 @@
 import std/[net, times, strutils]
 import ../../rpc/auth as rpcauth
 import messages, preauth, rc4 as krbRc4, etype
-import asrep, apreq, tgsreq
+import asrep, apreq, tgsreq, gsswrap
 
 when defined(posix):
   from std/posix import nil   # qualified access only — avoid AF_INET clash
+elif defined(windows):
+  from std/winlean import nil
+
+  # Winsock's SO_RCVTIMEO is 0x1006; winlean exports it in newer Nim
+  # builds but not all, so we define it locally for safety.
+  const WinSoRcvTimeo = 0x1006'i32
 
 type
+  KrbRole* = enum
+    krInitiator                      ## us = client; peer = service
+    krAcceptor                       ## us = server; peer = client
+
   KdcTransport* = enum
     ## Selects how AS-REQ / TGS-REQ get to the KDC.
     ##  - ktTcp:  always TCP/88 with 4-byte length prefix (RFC 4120 §7.2.2).
@@ -50,6 +60,9 @@ type
     svcSessionKey*: seq[byte]      ## service session key
     svcSessionEtype*: uint32
     preferEtype*: uint32
+    role*: KrbRole                 ## are we the initiator or the acceptor?
+    sndSeq*: uint64                ## next outbound GSS sequence number
+    rcvSeq*: uint64                ## expected next inbound sequence number
 
   KrbProtocolError* = object of CatchableError
 
@@ -57,14 +70,16 @@ proc newKerberosProvider*(realm, username, password, kdcHost: string;
                           kdcPort: int = 88;
                           authLevel: AuthnLevel = alPktIntegrity;
                           preferEtype: uint32 = krbRc4.EtypeRc4Hmac;
-                          transport: KdcTransport = ktAuto):
+                          transport: KdcTransport = ktAuto;
+                          role: KrbRole = krInitiator):
                           KerberosProvider =
   result = KerberosProvider(
     realm: realm, username: username, password: password,
     kdcHost: kdcHost, kdcPort: kdcPort,
     transport: transport,
     nonce: 0x12345678'u32,
-    preferEtype: preferEtype)
+    preferEtype: preferEtype,
+    role: role)
   result.state = asInit
   result.authType = atKerberos
   result.authLevel = authLevel
@@ -74,6 +89,8 @@ proc newKerberosProvider*(realm, username, password, kdcHost: string;
 
 proc setRecvTimeout(s: Socket; ms: int) =
   ## Apply SO_RCVTIMEO. std/net doesn't expose this directly.
+  ##  - POSIX: setsockopt takes a `struct timeval` (sec + usec).
+  ##  - Winsock: setsockopt takes a DWORD of milliseconds.
   when defined(posix):
     var tv: posix.Timeval
     tv.tv_sec = posix.Time(ms div 1000)
@@ -81,6 +98,12 @@ proc setRecvTimeout(s: Socket; ms: int) =
     discard posix.setsockopt(cast[posix.SocketHandle](s.getFd()),
                               posix.SOL_SOCKET, posix.SO_RCVTIMEO,
                               addr tv, posix.SockLen(sizeof(tv)))
+  elif defined(windows):
+    var msVal: int32 = int32(ms)
+    discard winlean.setsockopt(winlean.SocketHandle(s.getFd()),
+                                winlean.SOL_SOCKET, WinSoRcvTimeo,
+                                cast[cstring](addr msVal),
+                                winlean.SockLen(sizeof(msVal)))
 
 proc sendKdcUdp*(host: string; port: int; pdu: openArray[byte];
                  timeoutMs: int = 5000): seq[byte] =
@@ -324,3 +347,52 @@ method step*(p: KerberosProvider; serverToken: openArray[byte]): seq[byte] =
   ## empty signals "no further token to send".
   result = @[]
   p.state = asEstablished
+
+# --- per-message GSS Wrap / Unwrap (RFC 4121) ---------------------
+
+proc krbWrapData*(p: KerberosProvider; plaintext: openArray[byte]):
+                  seq[byte] =
+  ## Wrap ``plaintext`` for transmission to the service. Auto-increments
+  ## the send sequence number. Requires that ``initialize`` has run so
+  ## that ``svcSessionKey`` is populated.
+  if p.svcSessionKey.len == 0:
+    raise newException(KrbProtocolError,
+      "krbWrapData called before initialize() — no service session key")
+  result = gssWrap(p.svcSessionKey, plaintext, p.sndSeq,
+                    isInitiator = (p.role == krInitiator))
+  inc p.sndSeq
+
+proc krbUnwrapData*(p: KerberosProvider; token: openArray[byte]):
+                    tuple[plaintext: seq[byte]; ok: bool] =
+  ## Verify+decrypt a Wrap token from the service. Validates that the
+  ## sequence number matches what we expect; bumps the expected
+  ## receive counter on success.
+  if p.svcSessionKey.len == 0:
+    raise newException(KrbProtocolError,
+      "krbUnwrapData called before initialize()")
+  let (plain, gotSeq, ok) = gssUnwrap(p.svcSessionKey, token,
+                                       isInitiator = (p.role == krInitiator))
+  if not ok or gotSeq != p.rcvSeq:
+    return (plaintext: @[], ok: false)
+  inc p.rcvSeq
+  result = (plaintext: plain, ok: true)
+
+proc krbGetMic*(p: KerberosProvider; message: openArray[byte]): seq[byte] =
+  ## Integrity-only MIC token for ``message``.
+  if p.svcSessionKey.len == 0:
+    raise newException(KrbProtocolError,
+      "krbGetMic called before initialize()")
+  result = gssGetMic(p.svcSessionKey, message, p.sndSeq,
+                      isInitiator = (p.role == krInitiator))
+  inc p.sndSeq
+
+proc krbVerifyMic*(p: KerberosProvider; message, mic: openArray[byte]): bool =
+  if p.svcSessionKey.len == 0:
+    raise newException(KrbProtocolError,
+      "krbVerifyMic called before initialize()")
+  let (gotSeq, ok) = gssVerifyMic(p.svcSessionKey, message, mic,
+                                    isInitiator = (p.role == krInitiator))
+  if not ok or gotSeq != p.rcvSeq:
+    return false
+  inc p.rcvSeq
+  true
