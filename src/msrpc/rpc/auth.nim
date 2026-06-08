@@ -29,11 +29,13 @@ type
     alPktPrivacy     = 5
 
   AuthnType* = enum
+    ## Nim 2.0.x requires monotonically increasing values in
+    ## explicitly-numbered enums; keep these in numeric order.
     atNone           = 0
     atGssNegotiate   = 9     ## SPNEGO (NEGOEX wraps this in newer Windows)
     atNtlm           = 10
-    atKerberos       = 16    ## raw Kerberos
     atSchannel       = 14    ## TLS-like RPC over Schannel
+    atKerberos       = 16    ## raw Kerberos
 
   SecTrailer* = object
     authType*: AuthnType
