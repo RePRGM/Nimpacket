@@ -29,7 +29,7 @@ proc padToAlign*(data: var seq[byte]; alignment: int) =
 
 proc wrapOutgoing*(header: PduHeader;
                    stub: openArray[byte];
-                   provider: NtlmProvider;
+                   provider: AuthProvider;
                    level: AuthnLevel;
                    contextId: uint32;
                    typeSpecificPrologue: openArray[byte]): seq[byte] =
@@ -53,7 +53,7 @@ proc wrapOutgoing*(header: PduHeader;
 
   # Build sec_trailer
   let trailer = SecTrailer(
-    authType: atNtlm, authLevel: level,
+    authType: provider.authType, authLevel: level,
     padLength: uint8(padLen), reserved: 0,
     contextId: contextId)
   let tb = newBuffer()
@@ -62,21 +62,18 @@ proc wrapOutgoing*(header: PduHeader;
   body.add trailerBytes
 
   # Sign or sign+seal. The "sealLen" prefix is everything except the
-  # 8 trailer bytes at the end.
+  # 8 trailer bytes at the end. At integrity-only level we still call
+  # rpcSignSeal but with sealLen=0, which the provider treats as "sign
+  # only, no encrypt" — this keeps the path provider-agnostic.
   let sealLen = body.len - trailerBytes.len
-  var verifier: seq[byte]
-  case level
-  of alPktIntegrity:
-    # Sign over (prologue + stub + pad + trailer); no encryption.
-    let sig = provider.session.signSealPartial(body, sealLen = 0,
-                                                forClient = true)
-    verifier = newSeq[byte](16)
-    for i in 0 ..< 16: verifier[i] = sig[i]
-  of alPktPrivacy:
-    let sig = provider.rpcSignSeal(body, sealLen)
-    verifier = sig
-  else:
-    raise newException(ValueError, "wrapOutgoing requires integrity or privacy")
+  let signLen =
+    case level
+    of alPktIntegrity: 0
+    of alPktPrivacy: sealLen
+    else:
+      raise newException(ValueError,
+        "wrapOutgoing requires integrity or privacy")
+  let verifier = provider.rpcSignSeal(body, signLen)
 
   # Assemble header with correct lengths.
   var hdr = header
@@ -158,7 +155,7 @@ proc buildAuth3*(callId: uint32; contextId: uint32;
   result = b.consumed
 
 proc unwrapIncoming*(pdu_bytes: openArray[byte];
-                      provider: NtlmProvider;
+                      provider: AuthProvider;
                       prologueLen: int): tuple[stub: seq[byte]; ok: bool] =
   ## Decode an authenticated inbound PDU. ``prologueLen`` is the
   ## type-specific prologue size (8 for RESPONSE: alloc_hint + p_cont_id

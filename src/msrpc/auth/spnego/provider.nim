@@ -163,8 +163,8 @@ method unseal*(p: SpnegoProvider; pdu: var openArray[byte];
                verifier: openArray[byte]): bool =
   p.inner.unseal(pdu, verifier)
 
-proc rpcSignSeal*(p: SpnegoProvider; data: var openArray[byte];
-                  sealLen: int): seq[byte] =
+method rpcSignSeal*(p: SpnegoProvider; data: var openArray[byte];
+                    sealLen: int): seq[byte] =
   ## Per-message sign+seal.
   ##  - NTLM: RC4 seal data[0..sealLen-1] in place, return 16-byte sig.
   ##  - Kerberos at alPktIntegrity: compute an RFC 4121 MIC over the
@@ -188,8 +188,8 @@ proc rpcSignSeal*(p: SpnegoProvider; data: var openArray[byte];
     else:
       result = @[]
 
-proc rpcUnsealVerify*(p: SpnegoProvider; data: var openArray[byte];
-                      sealLen: int; verifier: openArray[byte]): bool =
+method rpcUnsealVerify*(p: SpnegoProvider; data: var openArray[byte];
+                        sealLen: int; verifier: openArray[byte]): bool =
   case p.mech
   of smNtlm:
     result = NtlmProvider(p.inner).rpcUnsealVerify(data, sealLen, verifier)

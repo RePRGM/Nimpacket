@@ -131,7 +131,13 @@ proc parseEncKdcRepPart*(plaintext: openArray[byte]): EncKdcRepPart =
   ## Other fields (last-req, nonce, key-expiration, flags, authtime,
   ## starttime, endtime, ...) are nice-to-have for full client logic.
   let b = newBuffer(@plaintext)
-  let outerLen = b.derReadTag(appConstructed(25))   # [APPLICATION 25]
+  # AS-REP uses [APPLICATION 25] (EncASRepPart); TGS-REP uses
+  # [APPLICATION 26] (EncTGSRepPart). Both have the same inner shape.
+  let outerTag = b.peekByte()
+  if outerTag != appConstructed(25) and outerTag != appConstructed(26):
+    raise newException(DerError,
+      "EncKDCRepPart must be tagged [APPLICATION 25] or [APPLICATION 26]")
+  let outerLen = b.derReadTag(outerTag)
   discard outerLen
   let seqLen = b.derReadTag(tagSequence)
   let seqEnd = b.pos + seqLen

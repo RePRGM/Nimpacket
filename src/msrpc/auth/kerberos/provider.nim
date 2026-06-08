@@ -14,7 +14,7 @@
 import std/[net, times, strutils]
 import ../../rpc/auth as rpcauth
 import messages, preauth, rc4 as krbRc4, etype
-import asrep, apreq, tgsreq, gsswrap, wrapex
+import asrep, apreq, tgsreq, gsswrap, wrapex, rc4wrap
 
 when defined(posix):
   from std/posix import nil   # qualified access only — avoid AF_INET clash
@@ -402,16 +402,28 @@ proc krbVerifyMic*(p: KerberosProvider; message, mic: openArray[byte]): bool =
 
 proc krbWrapExSeal*(p: KerberosProvider; data: var openArray[byte];
                     sealLen: int): seq[byte] =
-  ## Encrypt ``data[0 ..< sealLen]`` in place using MS-KILE WrapEx and
-  ## return the 60-byte verifier for the RPC sec_trailer.auth_value.
+  ## Encrypt ``data[0 ..< sealLen]`` in place and return the verifier
+  ## for the RPC sec_trailer.auth_value. Dispatches on the negotiated
+  ## service-session ETYPE: AES → MS-KILE WrapEx (60-byte verifier);
+  ## RC4 → RFC 4757 §7.3 Wrap token (32-byte verifier).
   if p.svcSessionKey.len == 0:
     raise newException(KrbProtocolError,
       "krbWrapExSeal called before initialize()")
-  let verifier = wrapExEncrypt(p.svcSessionKey, data, sealLen, p.sndSeq,
-                                isInitiator = (p.role == krInitiator))
-  inc p.sndSeq
-  result = newSeq[byte](WrapExVerifierLen)
-  for i in 0 ..< WrapExVerifierLen: result[i] = verifier[i]
+  case p.svcSessionEtype
+  of EtypeAes128, EtypeAes256:
+    let verifier = wrapExEncrypt(p.svcSessionKey, data, sealLen, p.sndSeq,
+                                  isInitiator = (p.role == krInitiator))
+    inc p.sndSeq
+    result = newSeq[byte](WrapExVerifierLen)
+    for i in 0 ..< WrapExVerifierLen: result[i] = verifier[i]
+  of krbRc4.EtypeRc4Hmac:
+    result = rc4WrapSeal(p.svcSessionKey, data, sealLen,
+                          seq = uint32(p.sndSeq and 0xffffffff'u64),
+                          isInitiator = (p.role == krInitiator))
+    inc p.sndSeq
+  else:
+    raise newException(KrbProtocolError,
+      "krbWrapExSeal: unsupported ETYPE " & $p.svcSessionEtype)
 
 proc krbWrapExUnseal*(p: KerberosProvider; data: var openArray[byte];
                       sealLen: int; verifier: openArray[byte]): bool =
@@ -419,10 +431,50 @@ proc krbWrapExUnseal*(p: KerberosProvider; data: var openArray[byte];
   if p.svcSessionKey.len == 0:
     raise newException(KrbProtocolError,
       "krbWrapExUnseal called before initialize()")
-  let (gotSeq, ok) = wrapExDecrypt(p.svcSessionKey, data, sealLen,
-                                    verifier,
-                                    isInitiator = (p.role == krInitiator))
-  if not ok or gotSeq != p.rcvSeq:
-    return false
-  inc p.rcvSeq
-  true
+  case p.svcSessionEtype
+  of EtypeAes128, EtypeAes256:
+    let (gotSeq, ok) = wrapExDecrypt(p.svcSessionKey, data, sealLen,
+                                      verifier,
+                                      isInitiator = (p.role == krInitiator))
+    if not ok or gotSeq != p.rcvSeq:
+      return false
+    inc p.rcvSeq
+    true
+  of krbRc4.EtypeRc4Hmac:
+    let (gotSeq, ok) = rc4WrapUnseal(p.svcSessionKey, data, sealLen,
+                                      verifier,
+                                      isInitiator = (p.role == krInitiator))
+    if not ok or uint64(gotSeq) != p.rcvSeq:
+      return false
+    inc p.rcvSeq
+    true
+  else:
+    false
+
+# --- AuthProvider method overrides ---------------------------------
+# These let a bare KerberosProvider (no SPNEGO wrapper) flow through
+# the generic ``wrapOutgoing``/``unwrapIncoming`` RPC pipeline.
+
+method rpcSignSeal*(p: KerberosProvider; data: var openArray[byte];
+                    sealLen: int): seq[byte] =
+  ## NTLM-shape contract: encrypt ``data[0 ..< sealLen]`` in place (or
+  ## nothing if sealLen=0) and return the auth verifier covering the
+  ## entire ``data`` buffer.
+  case p.authLevel
+  of alPktIntegrity:
+    # No encryption; MIC over the full PDU body the wrapper passed in.
+    result = krbGetMic(p, data)
+  of alPktPrivacy:
+    result = krbWrapExSeal(p, data, sealLen)
+  else:
+    result = @[]
+
+method rpcUnsealVerify*(p: KerberosProvider; data: var openArray[byte];
+                        sealLen: int; verifier: openArray[byte]): bool =
+  case p.authLevel
+  of alPktIntegrity:
+    result = krbVerifyMic(p, data, verifier)
+  of alPktPrivacy:
+    result = krbWrapExUnseal(p, data, sealLen, verifier)
+  else:
+    result = true
