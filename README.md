@@ -102,6 +102,11 @@ let `nimble examples` build the lot into `build/`.
 
 ## Using the library in your own code
 
+A full guide — high-level "it just works" patterns, mid-level
+composition, low-level primitives, plus the *why* behind each layer —
+lives in [`USAGE.md`](USAGE.md). The snippets below are the
+five-minute version.
+
 ```nim
 import msrpc/common/[guid, sid, status]
 import msrpc/auth/ntlm/provider
