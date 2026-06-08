@@ -183,9 +183,14 @@ You have three options, all implementing the same `AuthProvider` SPI
 ### Kerberos (`msrpc/auth/kerberos/provider`)
 
 * When you want what real domain-joined Windows clients use.
-* Requires a reachable KDC (UDP/88 — TCP/88 is on the roadmap), correct
-  realm spelling (uppercase!), and clock skew within ~5 minutes of the
-  KDC.
+* Requires a reachable KDC, correct realm spelling (uppercase!), and
+  clock skew within ~5 minutes of the KDC.
+* Transport defaults to **TCP/88 with UDP/88 fallback** (`ktAuto`). TCP
+  is what AD actually uses — AS-REPs contain a PAC and routinely exceed
+  the path MTU. UDP-only is fine for MIT realms or anything without a
+  PAC; force it with `transport = ktUdp`. The auto policy also retries
+  on TCP if a UDP request comes back with `KRB_ERR_RESPONSE_TOO_BIG`
+  (code 52).
 * Two ETYPEs ship: **RC4-HMAC (23)** for compatibility with legacy
   accounts and **AES-256-CTS-HMAC-SHA1-96 (18)** for modern AD. Choose
   via `preferEtype`. AES-128 (17) also works but offers no advantage
@@ -200,7 +205,8 @@ let krb = newKerberosProvider(
   username = "alice",
   password = "P@ssw0rd!",
   kdcHost = "dc01.corp.local",
-  preferEtype = EtypeAes256)        # or krbRc4.EtypeRc4Hmac
+  preferEtype = EtypeAes256,        # or krbRc4.EtypeRc4Hmac
+  transport = ktAuto)               # ktTcp / ktUdp / ktAuto (default)
 let spnego = newSpnegoKerberos(krb)
 # spnego can now be passed wherever an AuthProvider is expected
 ```

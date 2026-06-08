@@ -27,6 +27,15 @@ import unit/crypto/tkdf
 
 import unit/auth/kerberos/tetype
 import unit/auth/kerberos/tmessages
+import unit/auth/kerberos/tnfold
+import unit/auth/kerberos/taes_kdf
+import unit/auth/kerberos/taes_profile
+import unit/auth/kerberos/trc4
+import unit/auth/kerberos/tpreauth
+import unit/auth/kerberos/tapreq
+import unit/auth/kerberos/ttgsreq
+import unit/auth/kerberos/ttcp
+import unit/auth/spnego/tkerberos_wrap
 
 import unit/auth/tprovider
 
@@ -51,6 +60,8 @@ import unit/proto/srvs/tidl
 
 import unit/smb/theader
 import unit/smb/tsmb3
+import unit/smb/tnegotiate
+import unit/smb/tsign_encrypt
 
 import unit/idlgen/tparser
 import unit/idlgen/temitter

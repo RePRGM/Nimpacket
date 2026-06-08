@@ -56,7 +56,7 @@ protocol-specific opnums is implemented in Nim itself.
 - **Validated against RFC 3961 + RFC 3962 vectors** — n-fold,
   PBKDF2-HMAC-SHA1, and the AES-128/256 stringToKey worked examples
   all match bit-exact.
-- **248 tests passing**: ~241 unit, 4 loopback integration (TCP, NTLM
+- **287 tests passing**: ~280 unit, 4 loopback integration (TCP, NTLM
   sign+seal, fragmentation, UDP CLDAP), 3 live env-gated.
 - **Structure-aware fuzzer.** DER/NTLM/SMB2/DCE-RPC/LDAP/Kerberos
   generators; ~1.6M iterations in 30s with 0 crashes across 19
@@ -228,7 +228,7 @@ examples — `lsarpc` covers everything from `LsarOpenPolicy2` through
 |---|---|
 | MS-NLMP (NTLM) | NTOWFv1, NTOWFv2, all three messages, sign+seal, MIC, anonymous, client and server roles |
 | MS-SPNG (SPNEGO) | DER encoder, GSS-API wrap, `NegTokenInit` / `NegTokenResp`, NTLM or Kerberos inner mech |
-| MS-KILE / RFC 4120 (Kerberos) | AS-REQ → AS-REP (with `PA-ENC-TIMESTAMP` retry on `KDC_ERR_PREAUTH_REQUIRED`), TGS-REQ → TGS-REP, AP-REQ + Authenticator, GSS-API token wrap (RFC 4121 init token) |
+| MS-KILE / RFC 4120 (Kerberos) | AS-REQ → AS-REP (with `PA-ENC-TIMESTAMP` retry on `KDC_ERR_PREAUTH_REQUIRED`), TGS-REQ → TGS-REP, AP-REQ + Authenticator, GSS-API token wrap (RFC 4121 init token); both UDP/88 and TCP/88 (4-byte length-prefix) transports with auto-fallback |
 | RFC 4757 (RC4-HMAC ETYPE 23) | string-to-key, K1/K2/K3 derivation, encrypt + decrypt for usages 1/3/8/11 |
 | RFC 3961 / RFC 3962 (AES ETYPEs 17/18) | n-fold, DR/DK, PBKDF2-HMAC-SHA1, full `stringToKey` with `DK(tkey, "kerberos")`, AES-CTS (CS3), AES-CTS-HMAC-SHA1-96 profile with confounder + integrity check |
 | MS-RPCE (DCE-RPC) | Connection-oriented: BIND, BIND_ACK, AUTH3, REQUEST, RESPONSE, FAULT, fragmentation |
