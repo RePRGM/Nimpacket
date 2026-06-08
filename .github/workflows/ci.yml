@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        nim-version: ['2.0.x', '2.2.x']
+        nim-version: ['2.0.14', '2.2.4']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +19,7 @@ jobs:
       - uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: ${{ matrix.nim-version }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Show Nim version
         run: nim --version
@@ -28,15 +29,18 @@ jobs:
 
       - name: Loopback integration tests
         run: nim r --hints:off --threads:on tests/integration_all.nim
-        # On Windows, Defender can hold TCP ports — give us a few retries.
+        # On Windows, Defender can hold TCP ports — allow retries.
         continue-on-error: ${{ matrix.os == 'windows-latest' }}
 
       - name: Build example tools
+        shell: bash
         run: |
-          nim c -o:build/lsadom   --hints:off --path:src examples/lsadom.nim
-          nim c -o:build/lsausers --hints:off --path:src examples/lsausers.nim
-          nim c -o:build/samrenum --hints:off --path:src examples/samrenum.nim
-          nim c -o:build/idlgen   --hints:off --path:src src/msrpc/idlgen/cli.nim
+          mkdir -p build
+          for ex in lsadom lsausers samrenum sctl netshares \
+                    ldapquery cldapquery dcping; do
+            nim c -o:build/$ex --hints:off --path:src examples/$ex.nim
+          done
+          nim c -o:build/idlgen     --hints:off --path:src src/msrpc/idlgen/cli.nim
           nim c -o:build/msrpc-repl --hints:off --path:src src/msrpc/repl.nim
 
   doc:
@@ -44,6 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate API docs
         run: nim doc --project --outdir:docs src/msrpc.nim
       - uses: actions/upload-artifact@v4
