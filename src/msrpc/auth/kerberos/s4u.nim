@@ -25,9 +25,11 @@ import ../../crypto/md5
 import ../../crypto/hmac
 import ../spnego/asn1
 import messages
+import tgsreq
 
 const
   PaForUser* = 129                        ## padata-type for PA-FOR-USER
+  PaPacOptions* = 167                      ## padata-type for PA-PAC-OPTIONS (RBCD)
   CksumHmacMd5* = -138                     ## KERB_CHECKSUM_HMAC_MD5 (RC4 sessions)
   KerbNonKerbCksumSalt* = 17'u32           ## key usage for the S4U checksum
   signatureKey = "signaturekey\x00"
@@ -93,3 +95,48 @@ proc buildPaForUser*(userName, userRealm: string; tgtSessionKey: openArray[byte]
   body.writeBytes(cksumTag)
   body.writeBytes(authPkgTag)
   result = derTLV(tagSequence, body.consumed)
+
+# --- S4U2self / S4U2proxy TGS-REQ builders --------------------------
+
+proc buildS4U2self*(realm: string;
+                    serviceName: openArray[string];
+                    userName, userRealm: string;
+                    tgtSessionKey: openArray[byte];
+                    nonce: uint32;
+                    etypes: openArray[uint32];
+                    till: string;
+                    apReq: openArray[byte];
+                    serviceNameType = NtPrincipal): seq[byte] =
+  ## S4U2self: ask the KDC for a service ticket to ``serviceName`` (the
+  ## requesting service's OWN principal) on behalf of ``userName@userRealm``.
+  ## ``apReq`` is the service's AP-REQ to krbtgt; ``tgtSessionKey`` is that
+  ## TGT's session key (used to checksum the PA-FOR-USER).
+  let pfu = buildPaForUser(userName, userRealm, tgtSessionKey)
+  let sname = principalName(serviceNameType, serviceName)
+  result = buildTgsReqRaw(realm, sname, nonce, etypes, till, apReq,
+    kdcFlags = kdcOptionFlags([KdcOptForwardable, KdcOptRenewable, KdcOptCanonicalize]),
+    extraPaData = paDataEntry(PaForUser, pfu))
+
+proc buildS4U2proxy*(realm: string;
+                     targetService: openArray[string];
+                     evidenceTicket: openArray[byte];
+                     nonce: uint32;
+                     etypes: openArray[uint32];
+                     till: string;
+                     apReq: openArray[byte];
+                     targetNameType = NtSrvHst;
+                     pacOptions: openArray[byte] = @[]): seq[byte] =
+  ## S4U2proxy: present the S4U2self ``evidenceTicket`` (a forwardable service
+  ## ticket for the user) and ask for a ticket to ``targetService`` on the
+  ## user's behalf. Sets the cname-in-addl-tkt KDC option and places the
+  ## evidence ticket in req-body [11]. ``pacOptions``, if given, is a
+  ## pre-encoded PA-PAC-OPTIONS value appended as padata (for RBCD).
+  let sname = principalName(targetNameType, targetService)
+  var extra: seq[byte]
+  if pacOptions.len > 0:
+    extra = paDataEntry(PaPacOptions, pacOptions)
+  result = buildTgsReqRaw(realm, sname, nonce, etypes, till, apReq,
+    kdcFlags = kdcOptionFlags([KdcOptForwardable, KdcOptRenewable,
+                               KdcOptCnameInAddlTkt, KdcOptCanonicalize]),
+    extraPaData = extra,
+    additionalTickets = evidenceTicket)

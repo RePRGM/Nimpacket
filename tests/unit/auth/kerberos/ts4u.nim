@@ -7,6 +7,7 @@
 import std/[unittest, strutils]
 import msrpc/auth/kerberos/s4u
 import msrpc/auth/kerberos/messages
+import msrpc/auth/kerberos/tgsreq
 
 proc fromHex(s: string): seq[byte] =
   result = newSeq[byte](s.len div 2)
@@ -44,3 +45,58 @@ suite "PA-FOR-USER builder":
       "a10c1b0a434f52502e4c4f43414c" &
       "a21c301aa0040202ff76a1120410964bfca2fd7d7af026ff32491962fde8" &
       "a30a1b084b65726265726f73"
+
+suite "KDC-options flag packing":
+  test "bit positions map MSB-first into the 32-bit field":
+    check kdcOptionFlags([KdcOptForwardable, KdcOptRenewable, KdcOptCanonicalize]) ==
+      [0x40'u8, 0x81, 0x00, 0x00]
+    check kdcOptionFlags([KdcOptForwardable, KdcOptRenewable,
+                          KdcOptCnameInAddlTkt, KdcOptCanonicalize]) ==
+      [0x40'u8, 0x83, 0x00, 0x00]
+
+const fakeApReq = @[0x6e'u8, 0x03, 0x30, 0x01, 0x00]            # opaque AP-REQ
+const fakeEvidence = @[0x61'u8, 0x05, 0x30, 0x03, 0x02, 0x01, 0x05]  # opaque Ticket
+
+suite "S4U2self request":
+  let req = buildS4U2self("CORP.LOCAL", ["host", "web.corp.local"],
+                          "victim", "CORP.LOCAL", sessionKey,
+                          nonce = 0x11111111'u32, etypes = [0x17'u32],
+                          till = "20260601000000Z", apReq = fakeApReq)
+  let h = toHex(req)
+
+  test "is a TGS-REQ (msg-type 12)":
+    check req[0] == 0x6C'u8
+    check "a20302010c" in h
+
+  test "carries a PA-FOR-USER padata (type 129) with the checksum":
+    check "a1040202008" in h            # [1] INTEGER 129 (0x0081)
+    check "964bfca2fd7d7af026ff32491962fde8" in h
+
+  test "kdc-options = forwardable+renewable+canonicalize, no addl-tkt":
+    check "03050040810000" in h
+    check "03050040830000" notin h
+
+  test "targets the service's own principal (host/web.corp.local)":
+    check "686f7374" in h                        # "host"
+    check "7765622e636f72702e6c6f63616c" in h    # "web.corp.local"
+
+suite "S4U2proxy request":
+  let req = buildS4U2proxy("CORP.LOCAL", ["cifs", "file.corp.local"],
+                           fakeEvidence,
+                           nonce = 0x22222222'u32, etypes = [0x17'u32],
+                           till = "20260601000000Z", apReq = fakeApReq)
+  let h = toHex(req)
+
+  test "is a TGS-REQ (msg-type 12)":
+    check req[0] == 0x6C'u8
+    check "a20302010c" in h
+
+  test "sets cname-in-addl-tkt in kdc-options":
+    check "03050040830000" in h
+
+  test "places the evidence ticket in additional-tickets [11]":
+    # [11] (0xab) -> SEQUENCE (0x30) -> the evidence Ticket bytes
+    check "ab09300761053003020105" in h
+
+  test "carries no PA-FOR-USER":
+    check "964bfca2fd7d7af026ff32491962fde8" notin h
