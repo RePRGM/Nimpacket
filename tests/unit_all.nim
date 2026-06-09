@@ -39,6 +39,8 @@ import unit/auth/kerberos/tmockkdc
 import unit/auth/kerberos/tgsswrap
 import unit/auth/kerberos/twrapex
 import unit/auth/kerberos/trc4wrap
+import unit/auth/kerberos/tccache
+import unit/auth/kerberos/tkeytab
 import unit/auth/spnego/tkerberos_wrap
 import unit/auth/spnego/tkerberos_signseal
 

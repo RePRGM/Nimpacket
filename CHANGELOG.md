@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0 — 2026-06-08
+
+Promotes the Kerberos work that was "staged for 0.4" in 0.3.0 to a real
+release: the full AS/TGS/AP-REQ exchange now runs end to end and can sign,
+seal, and wrap live RPC traffic.
+
+**Kerberos transport + GSS:**
+- TCP/88 KDC transport with 4-byte length prefix and auto-fallback from
+  UDP/88 (`KRB5KRB_ERR_RESPONSE_TOO_BIG` and oversized-datagram policy)
+- RFC 4121 GSS-API per-message tokens: `GSS_Wrap` / `GSS_Unwrap` / `GSS_GetMIC`
+  with the AES-CTS-HMAC-SHA1-96 confidentiality + integrity profile
+- MS-KILE `GSS_WrapEx` for DCE-RPC `RPC_C_AUTHN_LEVEL_PKT_PRIVACY` sealing
+- RC4-HMAC (ETYPE 23) GSS wrap/unseal + MIC for RC4 sessions
+- Generic RPC sign/seal path wired through the `AuthProvider` SPI for Kerberos
+- Windows `setsockopt` handling for the raw KDC sockets
+
+**Tooling / tests:**
+- In-process **mock KDC** (`mockkdc.nim`) that mints AS/TGS replies and
+  service tickets for fully offline Kerberos unit + integration tests
+- PDU **pretty-printer** and **byte-diff** helpers for wire debugging
+
 ## 0.3.0 — 2026-06-08
 
 **Crypto foundation:**
