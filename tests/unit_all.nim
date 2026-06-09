@@ -43,6 +43,7 @@ import unit/auth/kerberos/tccache
 import unit/auth/kerberos/tkeytab
 import unit/auth/kerberos/tpac
 import unit/auth/kerberos/tvalidationinfo
+import unit/auth/kerberos/ts4u
 import unit/auth/spnego/tkerberos_wrap
 import unit/auth/spnego/tkerberos_signseal
 
