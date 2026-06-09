@@ -7,14 +7,11 @@
 ## the struct, then the inline fields followed by the deferred pointer
 ## referents (conformant/varying arrays, embedded SID).
 ##
-## Decode-only for now. Layout verified field-by-field against an
-## impacket-generated golden blob; field order cross-checked against MS-PAC
-## §2.5 and TrustedSec Titanis (ms-pac.cs).
-##
-## Limitation: a populated ``ExtraSids`` / resource-group list is not decoded
-## yet (the golden vector has none). When those pointers are non-null the
-## decoder stops after the logon-domain SID and leaves ``extraSidsPresent``
-## set so callers know the tail was skipped.
+## Decode-only for now. Layout verified field-by-field against two
+## impacket-generated golden blobs (with and without ExtraSids); field order
+## cross-checked against MS-PAC §2.5 and TrustedSec Titanis (ms-pac.cs).
+## Covers the full struct including ExtraSids (SID history) and the
+## resource-group tail.
 
 import msrpc/common/buffers
 import msrpc/common/endian
@@ -42,7 +39,14 @@ type
     hasLogonDomainId*: bool
     userAccountControl*: uint32
     sidCount*: uint32
-    extraSidsPresent*: bool      ## true when ExtraSids was non-null (not decoded yet)
+    extraSids*: seq[SidAndAttributes]          ## SID history / cross-domain group SIDs
+    resourceGroupDomainSid*: Sid
+    hasResourceGroupDomainSid*: bool
+    resourceGroups*: seq[GroupMembership]      ## resource-group RIDs in the above domain
+
+  SidAndAttributes* = object
+    sid*: Sid
+    attributes*: uint32
 
 proc fail(msg: string) {.noreturn.} =
   raise newException(PacDecodeError, msg)
@@ -65,6 +69,20 @@ proc readStrReferent(b: Buffer): string =
     result.setLen(result.len - 1)       # drop a trailing NUL if present
   let pad = (-b.pos) and 3              # NDR 4-byte alignment
   if pad > 0: discard b.readBytes(pad)
+
+proc readSidReferent(b: Buffer): Sid =
+  ## A deferred PISID: conformant MaxCount (= sub-authority count) then the SID.
+  discard b.readU32LE()
+  result = readWire(b)
+
+proc readGroupArray(b: Buffer): seq[GroupMembership] =
+  ## A deferred PGROUP_MEMBERSHIP_ARRAY: MaxCount then that many {RID, attrs}.
+  let mc = int(b.readU32LE())
+  for _ in 0 ..< mc:
+    var g: GroupMembership
+    g.relativeId = b.readU32LE()
+    g.attributes = b.readU32LE()
+    result.add g
 
 proc parseValidationInfo*(blob: openArray[byte]): KerbValidationInfo =
   ## Decode a KERB_VALIDATION_INFO (the bytes of a PAC ``PacLogonInfo`` buffer).
@@ -128,23 +146,31 @@ proc parseValidationInfo*(blob: openArray[byte]): KerbValidationInfo =
     if profileH.refId != 0: result.profilePath = readStrReferent(b)
     if homeH.refId != 0: result.homeDirectory = readStrReferent(b)
     if homeDriveH.refId != 0: result.homeDirectoryDrive = readStrReferent(b)
-    if groupsRef != 0:
-      let mc = int(b.readU32LE())        # array MaxCount
-      for _ in 0 ..< mc:
-        var g: GroupMembership
-        g.relativeId = b.readU32LE()
-        g.attributes = b.readU32LE()
-        result.groups.add g
+    if groupsRef != 0: result.groups = readGroupArray(b)
     if srvH.refId != 0: result.logonServer = readStrReferent(b)
     if domH.refId != 0: result.logonDomainName = readStrReferent(b)
     if domIdRef != 0:
-      discard b.readU32LE()              # conformant MaxCount (= sub-authority count)
-      result.logonDomainId = readWire(b)
+      result.logonDomainId = readSidReferent(b)
       result.hasLogonDomainId = true
 
-    # Resource-group / ExtraSids tail is not decoded yet; flag if present.
-    result.extraSidsPresent = extraSidsRef != 0 or resGrpDomSidRef != 0 or
-                              resGrpIdsRef != 0
+    if extraSidsRef != 0:
+      # KERB_SID_AND_ATTRIBUTES_ARRAY: MaxCount, then {SID ptr, attrs} inline
+      # per element, then the SID referents deferred in element order.
+      let mc = int(b.readU32LE())
+      var refs = newSeq[uint32](mc)
+      var attrs = newSeq[uint32](mc)
+      for i in 0 ..< mc:
+        refs[i] = b.readU32LE()
+        attrs[i] = b.readU32LE()
+      for i in 0 ..< mc:
+        var sa = SidAndAttributes(attributes: attrs[i])
+        if refs[i] != 0: sa.sid = readSidReferent(b)
+        result.extraSids.add sa
+    if resGrpDomSidRef != 0:
+      result.resourceGroupDomainSid = readSidReferent(b)
+      result.hasResourceGroupDomainSid = true
+    if resGrpIdsRef != 0: result.resourceGroups = readGroupArray(b)
+
     if groupsRef != 0 and result.groups.len != groupCount:
       fail("GroupCount (" & $groupCount & ") disagrees with array (" &
            $result.groups.len & ")")

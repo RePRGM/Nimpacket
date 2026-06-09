@@ -50,7 +50,35 @@ suite "KERB_VALIDATION_INFO decode":
 
   test "no extra SIDs in this PAC":
     check vi.sidCount == 0
-    check vi.extraSidsPresent == false
+    check vi.extraSids.len == 0
+    check vi.resourceGroups.len == 0
+
+const goldenExtraSidsHex =
+  "01100800ccccccccbc010000ccccccccf67300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a000a0007330000000000001e3f00000000000092e600000000000094f0000000000000412b00000000000049ad000003000000530400000102000001000000d01a0000200000000000000000000000000000000000000000000000d9860000080008009e8c0000836c00000000000000000000100200000000000000000000000000000000000000000000000000000000000002000000fbe1000000000000000000000000000005000000000000000500000061006c00690063006500abab00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000010200000700000000000000000000000000000004000000000000000400000043004f0052005000040000000104000000000005150000006f000000de0000004d010000020000003a620000070000008d85000004000000050000000105000000000005150000006f000000de0000004d0100005704000001000000010100000000001201000000"
+
+suite "KERB_VALIDATION_INFO with ExtraSids":
+  let vi = parseValidationInfo(fromHex(goldenExtraSidsHex))
+
+  test "core fields still decode with the longer tail":
+    check vi.userId == 1107
+    check vi.effectiveName == "alice"
+    check vi.logonDomainName == "CORP"
+    check vi.groups == @[GroupMembership(relativeId: 513, attributes: 7)]
+    check $vi.logonDomainId == "S-1-5-21-111-222-333"
+    check vi.userFlags == 0x20
+    check vi.userAccountControl == 0x210
+
+  test "extra SIDs (SID history) decode with attributes":
+    check vi.sidCount == 2
+    check vi.extraSids.len == 2
+    check $vi.extraSids[0].sid == "S-1-5-21-111-222-333-1111"
+    check vi.extraSids[0].attributes == 7
+    check $vi.extraSids[1].sid == "S-1-18-1"
+    check vi.extraSids[1].attributes == 4
+
+  test "no resource groups in this PAC":
+    check vi.resourceGroups.len == 0
+    check vi.hasResourceGroupDomainSid == false
 
 suite "KERB_VALIDATION_INFO rejects bad input":
   test "wrong type-serialization header":
