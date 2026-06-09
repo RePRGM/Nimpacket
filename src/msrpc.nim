@@ -75,6 +75,14 @@ import msrpc/auth/kerberos/messages as krb_messages
 import msrpc/auth/kerberos/provider as krb_provider
 export krb_etype, krb_messages, krb_provider
 
+import msrpc/auth/kerberos/tgsreq as krb_tgsreq
+import msrpc/auth/kerberos/s4u as krb_s4u
+import msrpc/auth/kerberos/ccache as krb_ccache
+import msrpc/auth/kerberos/keytab as krb_keytab
+import msrpc/auth/kerberos/pac as krb_pac
+import msrpc/auth/kerberos/validationinfo as krb_validationinfo
+export krb_tgsreq, krb_s4u, krb_ccache, krb_keytab, krb_pac, krb_validationinfo
+
 import msrpc/smb/header as smbheader
 import msrpc/smb/client as smbclient
 import msrpc/rpc/transport_np
