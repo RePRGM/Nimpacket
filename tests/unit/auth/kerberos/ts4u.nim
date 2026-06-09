@@ -46,6 +46,28 @@ suite "PA-FOR-USER builder":
       "a21c301aa0040202ff76a1120410964bfca2fd7d7af026ff32491962fde8" &
       "a30a1b084b65726265726f73"
 
+let aes256Key = fromHex(
+  "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+let aes128Key = fromHex("000102030405060708090a0b0c0d0e0f")
+
+suite "AES PA-FOR-USER checksum":
+  test "hmac-sha1-96-aes256 matches impacket":
+    let s4u = s4uByteArray(NtPrincipal, "victim", "CORP.LOCAL", "Kerberos")
+    check toHex(kerbChecksumAes(aes256Key, KerbNonKerbCksumSalt, s4u)) ==
+      "0002755a615c65152e7ef937"
+  test "hmac-sha1-96-aes128 matches impacket":
+    let s4u = s4uByteArray(NtPrincipal, "victim", "CORP.LOCAL", "Kerberos")
+    check toHex(kerbChecksumAes(aes128Key, KerbNonKerbCksumSalt, s4u)) ==
+      "9606bafa6ffadb7c024cff55"
+  test "PA-FOR-USER with AES256 checksum is byte-identical to impacket":
+    let pa = buildPaForUser("victim", "CORP.LOCAL", aes256Key,
+                            cksumType = CksumHmacSha1Aes256)
+    check toHex(pa) ==
+      "3048a0133011a003020101a10a30081b0676696374696d" &
+      "a10c1b0a434f52502e4c4f43414c" &
+      "a2173015a003020110a10e040c0002755a615c65152e7ef937" &
+      "a30a1b084b65726265726f73"
+
 suite "KDC-options flag packing":
   test "bit positions map MSB-first into the 32-bit field":
     check kdcOptionFlags([KdcOptForwardable, KdcOptRenewable, KdcOptCanonicalize]) ==

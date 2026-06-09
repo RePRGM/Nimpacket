@@ -26,11 +26,14 @@ import ../../crypto/hmac
 import ../spnego/asn1
 import messages
 import tgsreq
+import etype
 
 const
   PaForUser* = 129                        ## padata-type for PA-FOR-USER
   PaPacOptions* = 167                      ## padata-type for PA-PAC-OPTIONS (RBCD)
   CksumHmacMd5* = -138                     ## KERB_CHECKSUM_HMAC_MD5 (RC4 sessions)
+  CksumHmacSha1Aes128* = 15                ## hmac-sha1-96-aes128 (AES128 sessions)
+  CksumHmacSha1Aes256* = 16                ## hmac-sha1-96-aes256 (AES256 sessions)
   KerbNonKerbCksumSalt* = 17'u32           ## key usage for the S4U checksum
   signatureKey = "signaturekey\x00"
 
@@ -49,6 +52,24 @@ proc kerbChecksumHmacMd5*(key: openArray[byte]; usage: uint32;
   for i, b in data: tmp[4 + i] = b
   let digest = md5(tmp)
   result = hmacMd5(ksign, digest)
+
+proc kerbChecksumAes*(baseKey: openArray[byte]; usage: uint32;
+                      data: openArray[byte]): array[12, byte] =
+  ## hmac-sha1-96-aes{128,256} checksum (RFC 3962): HMAC-SHA1-96 keyed by the
+  ## derived checksum key Kc = DK(baseKey, BE(usage) || 0x99).
+  let kc = deriveKey(baseKey, usageConstant(usage, 0x99))
+  result = hmacSha1Truncated(kc, data)
+
+proc s4uChecksum*(key: openArray[byte]; usage: uint32; data: openArray[byte];
+                  cksumType: int): seq[byte] =
+  ## The PA-FOR-USER checksum for the given checksum type (chosen to match the
+  ## TGT session key's etype).
+  case cksumType
+  of CksumHmacMd5: result = @(kerbChecksumHmacMd5(key, usage, data))
+  of CksumHmacSha1Aes128, CksumHmacSha1Aes256:
+    result = @(kerbChecksumAes(key, usage, data))
+  else:
+    raise newException(ValueError, "unsupported S4U checksum type " & $cksumType)
 
 proc s4uByteArray*(nameType: int; userName, userRealm, authPackage: string): seq[byte] =
   ## The exact byte sequence the PA-FOR-USER checksum is computed over:
@@ -75,16 +96,16 @@ proc buildPaForUser*(userName, userRealm: string; tgtSessionKey: openArray[byte]
                      cksumType = CksumHmacMd5): seq[byte] =
   ## Build the DER-encoded PA-FOR-USER for an S4U2self request, computing the
   ## checksum with ``tgtSessionKey`` (the service's own TGT session key).
-  ## Currently emits the RC4 (HMAC-MD5) checksum.
+  ## ``cksumType`` selects RC4 (HMAC-MD5, default) or AES (HMAC-SHA1-96).
   let s4u = s4uByteArray(nameType, userName, userRealm, authPackage)
-  let chk = kerbChecksumHmacMd5(tgtSessionKey, KerbNonKerbCksumSalt, s4u)
+  let chk = s4uChecksum(tgtSessionKey, KerbNonKerbCksumSalt, s4u, cksumType)
 
   let userNameTag = fieldTag(0, principalName(nameType, [userName]))
   let userRealmTag = fieldTag(1, derTLV(0x1B'u8, cast[seq[byte]](userRealm)))
 
   let cksumInner = newBuffer()
   cksumInner.writeBytes(fieldTag(0, derTLV(0x02'u8, derSignedInt(cksumType))))
-  cksumInner.writeBytes(fieldTag(1, derTLV(tagOctetString, @chk)))
+  cksumInner.writeBytes(fieldTag(1, derTLV(tagOctetString, chk)))
   let cksumTag = fieldTag(2, derTLV(tagSequence, cksumInner.consumed))
 
   let authPkgTag = fieldTag(3, derTLV(0x1B'u8, cast[seq[byte]](authPackage)))
@@ -106,12 +127,14 @@ proc buildS4U2self*(realm: string;
                     etypes: openArray[uint32];
                     till: string;
                     apReq: openArray[byte];
-                    serviceNameType = NtPrincipal): seq[byte] =
+                    serviceNameType = NtPrincipal;
+                    cksumType = CksumHmacMd5): seq[byte] =
   ## S4U2self: ask the KDC for a service ticket to ``serviceName`` (the
   ## requesting service's OWN principal) on behalf of ``userName@userRealm``.
   ## ``apReq`` is the service's AP-REQ to krbtgt; ``tgtSessionKey`` is that
-  ## TGT's session key (used to checksum the PA-FOR-USER).
-  let pfu = buildPaForUser(userName, userRealm, tgtSessionKey)
+  ## TGT's session key (used to checksum the PA-FOR-USER). ``cksumType`` selects
+  ## RC4 (default) or AES per the TGT session key's etype.
+  let pfu = buildPaForUser(userName, userRealm, tgtSessionKey, cksumType = cksumType)
   let sname = principalName(serviceNameType, serviceName)
   result = buildTgsReqRaw(realm, sname, nonce, etypes, till, apReq,
     kdcFlags = kdcOptionFlags([KdcOptForwardable, KdcOptRenewable, KdcOptCanonicalize]),
