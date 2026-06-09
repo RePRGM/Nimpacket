@@ -229,6 +229,9 @@ examples — `lsarpc` covers everything from `LsarOpenPolicy2` through
 | MS-NLMP (NTLM) | NTOWFv1, NTOWFv2, all three messages, sign+seal, MIC, anonymous, client and server roles |
 | MS-SPNG (SPNEGO) | DER encoder, GSS-API wrap, `NegTokenInit` / `NegTokenResp`, NTLM or Kerberos inner mech |
 | MS-KILE / RFC 4120 (Kerberos) | AS-REQ → AS-REP (with `PA-ENC-TIMESTAMP` retry on `KDC_ERR_PREAUTH_REQUIRED`), TGS-REQ → TGS-REP, AP-REQ + Authenticator, GSS-API token wrap (RFC 4121 init token); both UDP/88 and TCP/88 (4-byte length-prefix) transports with auto-fallback |
+| MS-SFU (S4U delegation) | `PA-FOR-USER` with KERB_CHECKSUM_HMAC_MD5 (RC4) and hmac-sha1-96-aes128/256 checksums; `buildS4U2self` (protocol transition) and `buildS4U2proxy` (constrained delegation: `cname-in-addl-tkt` + additional-tickets), byte-checked vs impacket |
+| MS-PAC | PACTYPE container, `PAC_CLIENT_INFO`, `PAC_SIGNATURE_DATA`, and full NDR `KERB_VALIDATION_INFO` decode (user/primary/group RIDs, account & domain names, logon-domain SID, ExtraSids/SID-history, resource groups) |
+| MIT ccache / keytab | `FILE:` credential-cache v4 (`0x0504`) and keytab v2 (`0x0502`) read + write, byte-compatible with `klist`/`kinit`/impacket via `KRB5CCNAME` |
 | RFC 4757 (RC4-HMAC ETYPE 23) | string-to-key, K1/K2/K3 derivation, encrypt + decrypt for usages 1/3/8/11 |
 | RFC 3961 / RFC 3962 (AES ETYPEs 17/18) | n-fold, DR/DK, PBKDF2-HMAC-SHA1, full `stringToKey` with `DK(tkey, "kerberos")`, AES-CTS (CS3), AES-CTS-HMAC-SHA1-96 profile with confounder + integrity check |
 | MS-RPCE (DCE-RPC) | Connection-oriented: BIND, BIND_ACK, AUTH3, REQUEST, RESPONSE, FAULT, fragmentation |

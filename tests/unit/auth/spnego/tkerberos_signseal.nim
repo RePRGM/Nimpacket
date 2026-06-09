@@ -7,16 +7,19 @@ import msrpc/rpc/auth as rpcauth
 import msrpc/auth/kerberos/provider as krb
 import msrpc/auth/spnego/provider as spnego
 import msrpc/auth/kerberos/etype
+import msrpc/auth/kerberos/rc4 as krbRc4
 
 proc str(s: string): seq[byte] =
   result = newSeq[byte](s.len)
   for i, c in s: result[i] = byte(c)
 
-proc mockEstablished(k: krb.KerberosProvider; sessionKey: openArray[byte]) =
+proc mockEstablished(k: krb.KerberosProvider; sessionKey: openArray[byte];
+                     etype: uint32 = EtypeAes128) =
   ## Skip the AS/TGS exchange and pretend we've already negotiated a
   ## service session key with the peer.
   k.svcSessionKey = newSeq[byte](sessionKey.len)
   for i, b in sessionKey: k.svcSessionKey[i] = b
+  k.svcSessionEtype = etype
   k.state = asEstablished
 
 suite "SPNEGO + Kerberos rpcSignSeal at alPktIntegrity":
@@ -75,13 +78,13 @@ suite "SPNEGO + Kerberos rpcSignSeal at alPktIntegrity":
                           EtypeAes256, iterations = 1)
     let kc = krb.newKerberosProvider("R", "u", "p", "kdc",
                                      authLevel = alPktPrivacy)
-    kc.mockEstablished(key)
+    kc.mockEstablished(key, EtypeAes256)
     let spc = spnego.newSpnegoKerberos(kc)
     spc.authLevel = alPktPrivacy
     let ks = krb.newKerberosProvider("R", "u", "p", "kdc",
                                      authLevel = alPktPrivacy,
                                      role = krAcceptor)
-    ks.mockEstablished(key)
+    ks.mockEstablished(key, EtypeAes256)
     let sps = spnego.newSpnegoKerberos(ks)
     sps.authLevel = alPktPrivacy
 
@@ -94,6 +97,31 @@ suite "SPNEGO + Kerberos rpcSignSeal at alPktIntegrity":
     let ok = sps.rpcUnsealVerify(body, body.len, verifier)
     check ok
     check body == plain                 # decrypted back
+
+  test "alPktPrivacy with RC4-HMAC session key seals via RFC 4757":
+    # 16-byte RC4 session key (typical AD-issued ticket session key).
+    var key = newSeq[byte](16)
+    for i in 0 ..< 16: key[i] = byte(0x40 + i)
+    let kc = krb.newKerberosProvider("R", "u", "p", "kdc",
+                                     authLevel = alPktPrivacy)
+    kc.mockEstablished(key, krbRc4.EtypeRc4Hmac)
+    let spc = spnego.newSpnegoKerberos(kc)
+    spc.authLevel = alPktPrivacy
+    let ks = krb.newKerberosProvider("R", "u", "p", "kdc",
+                                     authLevel = alPktPrivacy,
+                                     role = krAcceptor)
+    ks.mockEstablished(key, krbRc4.EtypeRc4Hmac)
+    let sps = spnego.newSpnegoKerberos(ks)
+    sps.authLevel = alPktPrivacy
+
+    let plain = str("RC4 sealed RPC body")
+    var body = plain
+    let verifier = spc.rpcSignSeal(body, body.len)
+    check verifier.len == 32        # RFC 4757 token is 32 bytes, not 60
+    check body != plain
+    let ok = sps.rpcUnsealVerify(body, body.len, verifier)
+    check ok
+    check body == plain
 
   test "alPktPrivacy: tampering with the sealed body fails":
     let key = stringToKey(str("password"), str("salt"),

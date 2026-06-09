@@ -35,8 +35,15 @@ import unit/auth/kerberos/tpreauth
 import unit/auth/kerberos/tapreq
 import unit/auth/kerberos/ttgsreq
 import unit/auth/kerberos/ttcp
+import unit/auth/kerberos/tmockkdc
 import unit/auth/kerberos/tgsswrap
 import unit/auth/kerberos/twrapex
+import unit/auth/kerberos/trc4wrap
+import unit/auth/kerberos/tccache
+import unit/auth/kerberos/tkeytab
+import unit/auth/kerberos/tpac
+import unit/auth/kerberos/tvalidationinfo
+import unit/auth/kerberos/ts4u
 import unit/auth/spnego/tkerberos_wrap
 import unit/auth/spnego/tkerberos_signseal
 
@@ -56,6 +63,7 @@ import unit/rpc/trequest
 import unit/rpc/tfragment
 import unit/rpc/tepm
 import unit/rpc/twrapper
+import unit/rpc/twrap_kerberos
 
 import unit/proto/traa_marshal
 import unit/proto/scmr/tidl
@@ -68,6 +76,9 @@ import unit/smb/tsign_encrypt
 
 import unit/idlgen/tparser
 import unit/idlgen/temitter
+
+import unit/tools/tpretty
+import unit/tools/tbytediff
 
 import unit/ldap/tber
 import unit/ldap/tmessages

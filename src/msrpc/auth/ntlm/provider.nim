@@ -271,8 +271,8 @@ method unseal*(p: NtlmProvider; pdu: var openArray[byte];
 
 # --- RPC-flavoured wrappers used by rpc/client.nim ----------------------
 
-proc rpcSignSeal*(p: NtlmProvider; data: var openArray[byte];
-                  sealLen: int): seq[byte] =
+method rpcSignSeal*(p: NtlmProvider; data: var openArray[byte];
+                    sealLen: int): seq[byte] =
   ## Sign+seal an outbound RPC payload. The session's key-direction
   ## selection follows the provider's ``role``: a client provider uses
   ## the client-to-server sign/seal keys, a server provider uses the
@@ -282,8 +282,8 @@ proc rpcSignSeal*(p: NtlmProvider; data: var openArray[byte];
   result = newSeq[byte](16)
   for i in 0 ..< 16: result[i] = sig[i]
 
-proc rpcUnsealVerify*(p: NtlmProvider; data: var openArray[byte];
-                      sealLen: int; verifier: openArray[byte]): bool =
+method rpcUnsealVerify*(p: NtlmProvider; data: var openArray[byte];
+                        sealLen: int; verifier: openArray[byte]): bool =
   ## Inverse: a client unseals server→client traffic, a server unseals
   ## client→server traffic.
   p.session.unsealVerifyPartial(data, sealLen, verifier,

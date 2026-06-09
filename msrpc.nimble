@@ -1,5 +1,5 @@
 # Package
-version       = "0.3.0"
+version       = "0.4.0"
 author        = "msrpc-nim contributors"
 description   = "Cross-platform MS-RPC + SMB2/3 + NTLM + Kerberos + NDR + LDAP/CLDAP in pure Nim"
 license       = "MIT"

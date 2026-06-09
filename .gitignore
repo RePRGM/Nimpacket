@@ -6,3 +6,6 @@ nimcache/
 *.so
 *.dylib
 .DS_Store
+
+# Local Claude Code / editor tooling config
+.claude/

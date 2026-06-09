@@ -24,7 +24,7 @@ type
     contextId*: uint16
     callId*: uint32
     maxXmit*, maxRecv*: uint16
-    auth*: NtlmProvider             ## nil ⇒ unauthenticated
+    auth*: AuthProvider             ## nil ⇒ unauthenticated
     authLevel*: AuthnLevel          ## ignored when ``auth`` is nil
     authContextId*: uint32
 
@@ -44,7 +44,7 @@ proc readPdu(c: RpcClient): seq[byte] =
 proc connect*(t: Transport; interfaceUuid: Uuid; interfaceVersion: uint32;
               transferSyntax: SyntaxId = ndrTransferSyntax();
               maxXmit: uint16 = 5840; maxRecv: uint16 = 5840;
-              auth: NtlmProvider = nil;
+              auth: AuthProvider = nil;
               authLevel: AuthnLevel = alPktPrivacy;
               targetSpn: string = ""): RpcClient =
   ## Connect, BIND (with optional NTLM auth handshake), and return a

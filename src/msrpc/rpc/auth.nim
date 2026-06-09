@@ -98,4 +98,17 @@ method unseal*(p: AuthProvider; pdu: var openArray[byte];
                verifier: openArray[byte]): bool {.base.} =
   ## Decrypt ``pdu`` in place and validate the verifier.
   raise newException(CatchableError, "unseal not implemented")
+
+method rpcSignSeal*(p: AuthProvider; data: var openArray[byte];
+                    sealLen: int): seq[byte] {.base.} =
+  ## RPC-flavoured sign+seal: encrypt ``data[0 ..< sealLen]`` in place
+  ## using the provider's privacy/integrity scheme and return the
+  ## sec_trailer.auth_value bytes.
+  raise newException(CatchableError, "rpcSignSeal not implemented")
+
+method rpcUnsealVerify*(p: AuthProvider; data: var openArray[byte];
+                        sealLen: int;
+                        verifier: openArray[byte]): bool {.base.} =
+  ## Inverse of rpcSignSeal.
+  raise newException(CatchableError, "rpcUnsealVerify not implemented")
 {.pop.}
